@@ -1,0 +1,43 @@
+{
+  "name": "acadchestra",
+  "version": "1.0.0",
+  "description": "Complete School Management System - Orchestrating Education Excellence",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd apps/backend && npm run start:dev",
+    "dev:frontend": "cd apps/frontend && npm run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd apps/backend && npm run build",
+    "build:frontend": "cd apps/frontend && npm run build",
+    "test": "npm run test:backend && npm run test:frontend",
+    "test:backend": "cd apps/backend && npm run test",
+    "test:frontend": "cd apps/frontend && npm run test",
+    "lint": "npm run lint:backend && npm run lint:frontend",
+    "lint:backend": "cd apps/backend && npm run lint",
+    "lint:frontend": "cd apps/frontend && npm run lint",
+    "setup": "npm install && npm run setup:backend && npm run setup:frontend",
+    "setup:backend": "cd apps/backend && npm install",
+    "setup:frontend": "cd apps/frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^5.2.1",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@tanstack/react-query": "^5.85.5",
+    "axios": "^1.11.0",
+    "lucide-react": "^0.541.0",
+    "react-hook-form": "^7.62.0",
+    "recharts": "^3.1.2",
+    "socket.io-client": "^4.8.1",
+    "zod": "^4.0.17",
+    "zustand": "^5.0.8"
+  }
+}

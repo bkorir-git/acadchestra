@@ -1,0 +1,34 @@
+﻿version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: acadchestra-postgres
+    environment:
+      POSTGRES_DB: acadchestra_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - acadchestra-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: acadchestra-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - acadchestra-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  acadchestra-network:
+    driver: bridge
