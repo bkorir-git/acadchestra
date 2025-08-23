@@ -1,0 +1,355 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Multi-tenant model - Schools/Organizations
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  domain      String   @unique
+  subdomain   String?  @unique
+  email       String
+  phone       String?
+  address     String?
+  logo        String?
+  website     String?
+  
+  // Subscription details
+  planType    PlanType @default(LITE)
+  isActive    Boolean  @default(true)
+  maxStudents Int      @default(100)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  users       User[]
+  roles       Role[]  // Added this missing relation
+  academicYears AcademicYear[]
+  classes     Class[]
+  subjects    Subject[]
+  students    Student[]
+  teachers    Teacher[]
+  
+  @@map("tenants")
+}
+
+enum PlanType {
+  LITE
+  PROFESSIONAL
+  ENTERPRISE
+  MULTI_SCHOOL
+}
+
+// User management with RBAC
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  username    String?  @unique
+  password    String
+  
+  // Personal info
+  firstName   String
+  lastName    String
+  phone       String?
+  avatar      String?
+  dateOfBirth DateTime?
+  gender      Gender?
+  
+  // Security
+  isEmailVerified Boolean @default(false)
+  isTwoFactorEnabled Boolean @default(false)
+  lastLogin   DateTime?
+  isActive    Boolean  @default(true)
+  
+  // Multi-tenant
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  userRoles   UserRole[]
+  student     Student?
+  teacher     Teacher?
+  
+  @@map("users")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+// Role-based access control
+model Role {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  isSystem    Boolean  @default(false) // System roles cannot be deleted
+  
+  // Multi-tenant
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  userRoles   UserRole[]
+  rolePermissions RolePermission[]
+  
+  @@unique([name, tenantId])
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  resource    String   // e.g., 'students', 'teachers', 'classes'
+  action      String   // e.g., 'create', 'read', 'update', 'delete'
+  description String?
+  
+  // Relations
+  rolePermissions RolePermission[]
+  
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+model UserRole {
+  id       String @id @default(cuid())
+  userId   String
+  roleId   String
+  
+  // Relations
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String
+  permissionId String
+  
+  // Relations
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// Academic structure
+model AcademicYear {
+  id        String   @id @default(cuid())
+  name      String   // e.g., "2024-2025"
+  startDate DateTime
+  endDate   DateTime
+  isCurrent Boolean  @default(false)
+  
+  // Multi-tenant
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  classes   Class[]
+  
+  @@unique([name, tenantId])
+  @@map("academic_years")
+}
+
+model Class {
+  id            String   @id @default(cuid())
+  name          String   // e.g., "Grade 10 A"
+  gradeLevel    Int      // 1-12
+  section       String?  // A, B, C, etc.
+  capacity      Int      @default(40)
+  
+  // Relations
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  
+  classTeacherId String?
+  classTeacher   Teacher? @relation(fields: [classTeacherId], references: [id])
+  
+  // Multi-tenant
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  // Relations
+  students      Student[]
+  subjects      ClassSubject[]
+  
+  @@unique([name, academicYearId, tenantId])
+  @@map("classes")
+}
+
+model Subject {
+  id          String   @id @default(cuid())
+  name        String
+  code        String
+  description String?
+  gradeLevel  Int      // Which grade this subject is for
+  isCompulsory Boolean @default(true)
+  credits     Int      @default(1)
+  
+  // Multi-tenant
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  classes     ClassSubject[]
+  
+  @@unique([code, tenantId])
+  @@map("subjects")
+}
+
+model ClassSubject {
+  id        String @id @default(cuid())
+  classId   String
+  subjectId String
+  teacherId String?
+  
+  // Relations
+  class     Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher   Teacher? @relation(fields: [teacherId], references: [id])
+  
+  @@unique([classId, subjectId])
+  @@map("class_subjects")
+}
+
+// Student management
+model Student {
+  id            String   @id @default(cuid())
+  rollNumber    String
+  admissionNumber String
+  admissionDate DateTime
+  
+  // Relations
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  classId       String
+  class         Class    @relation(fields: [classId], references: [id])
+  
+  // Multi-tenant (inherited from user)
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Academic info
+  academicStatus StudentStatus @default(ACTIVE)
+  
+  // Emergency contact
+  emergencyContact String?
+  emergencyPhone   String?
+  
+  // Timestamps
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@unique([rollNumber, tenantId])
+  @@unique([admissionNumber, tenantId])
+  @@map("students")
+}
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+  GRADUATED
+  TRANSFERRED
+  DROPPED
+}
+
+// Teacher/Staff management
+model Teacher {
+  id              String   @id @default(cuid())
+  employeeId      String
+  joiningDate     DateTime
+  designation     String
+  department      String?
+  qualification   String?
+  experience      Int?     // in years
+  salary          Float?
+  
+  // Relations
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Multi-tenant (inherited from user)
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Status
+  employmentStatus EmploymentStatus @default(ACTIVE)
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  classesAsTeacher Class[]
+  subjectsTaught   ClassSubject[]
+  
+  @@unique([employeeId, tenantId])
+  @@map("teachers")
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+  RESIGNED
+}
+
+// Audit logging
+model AuditLog {
+  id          String   @id @default(cuid())
+  action      String   // CREATE, UPDATE, DELETE
+  tableName   String
+  recordId    String
+  oldValues   Json?
+  newValues   Json?
+  
+  // User who performed the action
+  userId      String
+  
+  // Multi-tenant
+  tenantId    String
+  
+  // Timestamp
+  createdAt   DateTime @default(now())
+  
+  @@map("audit_logs")
+}
