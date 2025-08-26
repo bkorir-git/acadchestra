@@ -11,6 +11,8 @@ import { TenantsModule } from './common/tenants/tenants.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { SystemModule } from './common/system/system.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { RolesModule } from './common/roles/roles.module';
+import { StudentsModule } from './students/students.module';
 
 @Module({
   imports: [
@@ -33,6 +35,8 @@ import { DashboardModule } from './dashboard/dashboard.module';
     TenantsModule,
     SystemModule, 
     DashboardModule,
+    RolesModule,
+    StudentsModule,
   ],
   controllers: [AppController],
   providers: [
