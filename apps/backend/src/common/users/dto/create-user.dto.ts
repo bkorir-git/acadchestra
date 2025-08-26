@@ -5,17 +5,12 @@ import {
   MinLength, 
   MaxLength, 
   IsOptional, 
-  IsUUID,
   IsEnum,
   IsDateString,
-  IsBoolean 
+  IsBoolean,
+  Matches
 } from 'class-validator';
-
-export enum Gender {
-  MALE = 'MALE',
-  FEMALE = 'FEMALE',
-  OTHER = 'OTHER'
-}
+import { Gender } from '@prisma/client';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'john.doe@school.edu' })
@@ -80,7 +75,15 @@ export class CreateUserDto {
   @IsBoolean()
   isActive?: boolean;
 
-  @ApiProperty({ example: 'clxxx...', required: true })
-  @IsUUID()
+  // Updated to accept CUID instead of UUID
+  @ApiProperty({ example: 'cmenvqh6z00003g1gi685dg6b', required: true })
+  @IsString()
+  @Matches(/^c[^\s-]{8,}$/, { message: 'tenantId must be a valid CUID' })
   tenantId: string;
+
+  // Role assignment
+  @ApiProperty({ example: 'Admin', required: false })
+  @IsOptional()
+  @IsString()
+  roleName?: string;
 }

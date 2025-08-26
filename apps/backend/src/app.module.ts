@@ -9,6 +9,8 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './common/users/users.module';
 import { TenantsModule } from './common/tenants/tenants.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
+import { SystemModule } from './common/system/system.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -29,6 +31,8 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
     AuthModule,
     UsersModule,
     TenantsModule,
+    SystemModule, 
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [

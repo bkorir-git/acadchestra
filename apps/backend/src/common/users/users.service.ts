@@ -8,8 +8,8 @@ import * as bcrypt from 'bcrypt';
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(createUserDto: CreateUserDto) {
-    const { email, password, ...userData } = createUserDto;
+  async create(createUserDto: CreateUserDto, tenantId: any, isSuperAdmin: any) {
+    const { email, password, roleName, ...userData } = createUserDto;
 
     // Check if user already exists
     const existingUser = await this.prisma.user.findUnique({
@@ -23,21 +23,121 @@ export class UsersService {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    return this.prisma.user.create({
-      data: {
-        ...userData,
-        email,
-        password: hashedPassword,
-      },
-      include: {
-        tenant: true,
-        userRoles: {
-          include: {
-            role: true,
+    // Create user in transaction
+    const result = await this.prisma.$transaction(async (tx) => {
+      // Create the user
+      const user = await tx.user.create({
+        data: {
+          ...userData,
+          email,
+          password: hashedPassword,
+        },
+        include: {
+          tenant: true,
+        },
+      });
+
+      // If roleName provided, assign the role
+      if (roleName) {
+        const role = await tx.role.findFirst({
+          where: { 
+            name: roleName, 
+            tenantId: userData.tenantId 
+          },
+        });
+
+        if (role) {
+          await tx.userRole.create({
+            data: {
+              userId: user.id,
+              roleId: role.id,
+            },
+          });
+        }
+      }
+
+      return tx.user.findUnique({
+        where: { id: user.id },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+          tenantId: true,
+          password: true,
+          tenant: true,
+          userRoles: {
+            include: {
+              role: true,
+            },
           },
         },
-      },
+      });
     });
+
+    // TypeScript assertion to ensure result is not null (we know it exists)
+    if (!result) {
+      throw new Error('Failed to create user');
+    }
+
+    const { password: _, ...userWithoutPassword } = result;
+    return userWithoutPassword;
+  }
+
+  async findAllGlobal(page = 1, limit = 10, search?: string) {
+    const skip = (page - 1) * limit;
+
+    // Build where clause
+    const where: any = {};
+    
+    if (search) {
+      where.OR = [
+        { firstName: { contains: search, mode: 'insensitive' } },
+        { lastName: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const [users, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+          tenantId: true,
+          tenant: true,
+          userRoles: {
+            include: {
+              role: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      data: users,
+      meta: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async findAll(tenantId: string, page = 1, limit = 10) {
@@ -48,7 +148,16 @@ export class UsersService {
         where: { tenantId },
         skip,
         take: limit,
-        include: {
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          isActive: true,
+          createdAt: true,
+          updatedAt: true,
+          tenantId: true,
           userRoles: {
             include: {
               role: true,
@@ -60,11 +169,8 @@ export class UsersService {
       this.prisma.user.count({ where: { tenantId } }),
     ]);
 
-    // Remove passwords from response
-    const usersWithoutPasswords = users.map(({ password, ...user }) => user);
-
     return {
-      data: usersWithoutPasswords,
+      data: users,
       meta: {
         total,
         page,
@@ -74,10 +180,24 @@ export class UsersService {
     };
   }
 
-  async findOne(id: string, tenantId: string) {
+  async findOne(id: string, tenantId?: string) {
+    const whereClause: any = { id };
+    if (tenantId) {
+      whereClause.tenantId = tenantId;
+    }
+
     const user = await this.prisma.user.findFirst({
-      where: { id, tenantId },
-      include: {
+      where: whereClause,
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        tenantId: true,
         tenant: true,
         userRoles: {
           include: {
@@ -101,8 +221,7 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    const { password, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    return user;
   }
 
   async update(id: string, tenantId: string, updateUserDto: UpdateUserDto) {
@@ -117,7 +236,16 @@ export class UsersService {
     const updatedUser = await this.prisma.user.update({
       where: { id },
       data: updateUserDto,
-      include: {
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        tenantId: true,
         userRoles: {
           include: {
             role: true,
@@ -126,8 +254,46 @@ export class UsersService {
       },
     });
 
-    const { password, ...userWithoutPassword } = updatedUser;
-    return userWithoutPassword;
+    return updatedUser;
+  }
+
+  async toggleUserStatus(id: string, tenantId?: string) {
+    const whereClause: any = { id };
+    if (tenantId) {
+      whereClause.tenantId = tenantId;
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: whereClause,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id },
+      data: { isActive: !user.isActive },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        tenantId: true,
+        tenant: true,
+        userRoles: {
+          include: {
+            role: true,
+          },
+        },
+      },
+    });
+
+    return updatedUser;
   }
 
   async remove(id: string, tenantId: string) {
