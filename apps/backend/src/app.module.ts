@@ -13,6 +13,8 @@ import { SystemModule } from './common/system/system.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { RolesModule } from './common/roles/roles.module';
 import { StudentsModule } from './students/students.module';
+import { AcademicModule } from './academic/academic.module';
+import { TeachersModule } from './teachers/teachers.module';
 
 @Module({
   imports: [
@@ -37,6 +39,8 @@ import { StudentsModule } from './students/students.module';
     DashboardModule,
     RolesModule,
     StudentsModule,
+    AcademicModule,
+    TeachersModule,
   ],
   controllers: [AppController],
   providers: [

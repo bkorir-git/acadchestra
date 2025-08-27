@@ -14,84 +14,163 @@ export class AuthService {
     private readonly configService: ConfigService,
   ) {}
 
+  // async register(registerDto: RegisterDto) {
+  //   const { email, password, firstName, lastName, tenantId } = registerDto;
+
+  //   // Validate that tenantId is provided
+  //   if (!tenantId) {
+  //     throw new BadRequestException('Tenant ID is required');
+  //   }
+
+  //   // Check if tenant exists
+  //   const tenant = await this.prisma.tenant.findUnique({
+  //     where: { id: tenantId },
+  //   });
+
+  //   if (!tenant) {
+  //     throw new BadRequestException('Invalid tenant ID');
+  //   }
+
+  //   if (!tenant.isActive) {
+  //     throw new BadRequestException('Tenant is not active');
+  //   }
+
+  //   // Check if user already exists
+  //   const existingUser = await this.prisma.user.findUnique({
+  //     where: { email },
+  //   });
+
+  //   if (existingUser) {
+  //     throw new ConflictException('User with this email already exists');
+  //   }
+
+  //   // Hash password
+  //   const saltRounds = this.configService.get('BCRYPT_SALT_ROUNDS', 12);
+  //   const hashedPassword = await bcrypt.hash(password, parseInt(saltRounds));
+
+  //   // Create user
+  //   const user = await this.prisma.user.create({
+  //     data: {
+  //       email,
+  //       password: hashedPassword,
+  //       firstName,
+  //       lastName,
+  //       tenantId, // TypeScript now knows this is a string
+  //     },
+  //     include: {
+  //       tenant: true,
+  //       userRoles: {
+  //         include: {
+  //           role: {
+  //             include: {
+  //               rolePermissions: {
+  //                 include: {
+  //                   permission: true,
+  //                 },
+  //               },
+  //             },
+  //           },
+  //         },
+  //       },
+  //     },
+  //   });
+
+  //   // Generate JWT token
+  //   const payload = {
+  //     sub: user.id,
+  //     email: user.email,
+  //     tenantId: user.tenantId,
+  //   };
+
+  //   const token = this.jwtService.sign(payload);
+
+  //   // Remove password from response
+  //   const { password: _, ...userWithoutPassword } = user;
+
+  //   return {
+  //     user: userWithoutPassword,
+  //     token,
+  //   };
+  // }
+
   async register(registerDto: RegisterDto) {
-    const { email, password, firstName, lastName, tenantId } = registerDto;
+  const { email, password, firstName, lastName, username, phone, dateOfBirth, gender, tenantId } = registerDto;
 
-    // Validate that tenantId is provided
-    if (!tenantId) {
-      throw new BadRequestException('Tenant ID is required');
-    }
+  // Check if user already exists
+  const existingUser = await this.prisma.user.findUnique({
+    where: { email },
+  });
 
-    // Check if tenant exists
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-    });
+  if (existingUser) {
+    throw new ConflictException('User with this email already exists');
+  }
 
-    if (!tenant) {
-      throw new BadRequestException('Invalid tenant ID');
-    }
+  // Validate password
+  if (password.length < 8 || password.length > 100) {
+    throw new BadRequestException('Password must be between 8 and 100 characters');
+  }
 
-    if (!tenant.isActive) {
-      throw new BadRequestException('Tenant is not active');
-    }
+  // Hash password
+  const saltRounds = this.configService.get('BCRYPT_SALT_ROUNDS', 12);
+  const hashedPassword = await bcrypt.hash(password, parseInt(saltRounds));
 
-    // Check if user already exists
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email },
-    });
+  // Create user
+  const userData: any = {
+    email,
+    password: hashedPassword,
+    firstName,
+    lastName,
+    username,
+    phone,
+    dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+    gender,
+  };
 
-    if (existingUser) {
-      throw new ConflictException('User with this email already exists');
-    }
+  const resolvedTenantId = tenantId || (await this.getDefaultTenant())?.id;
+  if (resolvedTenantId) {
+    userData.tenantId = resolvedTenantId;
+  }
 
-    // Hash password
-    const saltRounds = this.configService.get('BCRYPT_SALT_ROUNDS', 12);
-    const hashedPassword = await bcrypt.hash(password, parseInt(saltRounds));
-
-    // Create user
-    const user = await this.prisma.user.create({
-      data: {
-        email,
-        password: hashedPassword,
-        firstName,
-        lastName,
-        tenantId, // TypeScript now knows this is a string
-      },
-      include: {
-        tenant: true,
-        userRoles: {
-          include: {
-            role: {
-              include: {
-                rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
-                },
-              },
-            },
-          },
+  const user = await this.prisma.user.create({
+    data: userData,
+    include: {
+      tenant: true,
+      userRoles: {
+        include: {
+          role: true,
         },
       },
-    });
+    },
+  });
 
-    // Generate JWT token
-    const payload = {
-      sub: user.id,
-      email: user.email,
-      tenantId: user.tenantId,
-    };
+  // Generate JWT token
+  const payload = { 
+    sub: user.id, 
+    email: user.email, 
+    tenantId: user.tenantId 
+  };
+  const token = this.jwtService.sign(payload);
 
-    const token = this.jwtService.sign(payload);
+  // Update last login
+  await this.prisma.user.update({
+    where: { id: user.id },
+    data: { lastLogin: new Date() },
+  });
 
-    // Remove password from response
-    const { password: _, ...userWithoutPassword } = user;
+  const { password: _, ...userWithoutPassword } = user;
+  
+  return {
+    user: userWithoutPassword,
+    token,
+  };
+}
 
-    return {
-      user: userWithoutPassword,
-      token,
-    };
-  }
+private async getDefaultTenant() {
+  return this.prisma.tenant.findFirst({
+    where: { isActive: true },
+  });
+}
+
 
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;

@@ -27,18 +27,28 @@ model Tenant {
   isActive    Boolean  @default(true)
   maxStudents Int      @default(100)
   
+  // Academic configuration
+  termStructure    TermStructure @default(THREE_TERMS)
+  gradeStructure   Json? // Store grade/level structure configuration
+  feeConfiguration Json? // Store fee calculation rules
+  
   // Timestamps
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
   // Relations
   users       User[]
-  roles       Role[]  // Added this missing relation
+  roles       Role[]
   academicYears AcademicYear[]
+  academicTerms AcademicTerm[]
   classes     Class[]
   subjects    Subject[]
   students    Student[]
   teachers    Teacher[]
+  feeStructures FeeStructure[]
+  studentFees StudentFee[]
+  feePayments FeePayment[]
+  examinations Examination[]
   
   @@map("tenants")
 }
@@ -48,6 +58,13 @@ enum PlanType {
   PROFESSIONAL
   ENTERPRISE
   MULTI_SCHOOL
+}
+
+enum TermStructure {
+  TWO_SEMESTERS   // Semester 1, Semester 2
+  THREE_TERMS     // Term 1, Term 2, Term 3
+  FOUR_QUARTERS   // Quarter 1, Quarter 2, Quarter 3, Quarter 4
+  CUSTOM          // Configurable terms
 }
 
 // User management with RBAC
@@ -98,7 +115,7 @@ model Role {
   id          String   @id @default(cuid())
   name        String
   description String?
-  isSystem    Boolean  @default(false) // System roles cannot be deleted
+  isSystem    Boolean  @default(false)
   
   // Multi-tenant
   tenantId    String
@@ -118,8 +135,8 @@ model Role {
 
 model Permission {
   id          String   @id @default(cuid())
-  resource    String   // e.g., 'students', 'teachers', 'classes'
-  action      String   // e.g., 'create', 'read', 'update', 'delete'
+  resource    String
+  action      String
   description String?
   
   // Relations
@@ -158,13 +175,17 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-// Academic structure
+// Enhanced Academic Structure
 model AcademicYear {
   id        String   @id @default(cuid())
   name      String   // e.g., "2024-2025"
   startDate DateTime
   endDate   DateTime
   isCurrent Boolean  @default(false)
+  
+  // Configuration
+  termStructure TermStructure @default(THREE_TERMS)
+  totalTerms    Int           @default(3)
   
   // Multi-tenant
   tenantId  String
@@ -176,17 +197,62 @@ model AcademicYear {
   
   // Relations
   classes   Class[]
+  terms     AcademicTerm[]
+  feeStructures FeeStructure[]
   
   @@unique([name, tenantId])
   @@map("academic_years")
 }
 
+model AcademicTerm {
+  id          String   @id @default(cuid())
+  name        String   // e.g., "Term 1", "Semester 1", "Quarter 1"
+  shortName   String   // e.g., "T1", "S1", "Q1"
+  termNumber  Int      // 1, 2, 3, etc.
+  startDate   DateTime
+  endDate     DateTime
+  isActive    Boolean  @default(false)
+  
+  // Term configuration
+  hasExams    Boolean  @default(true)
+  hasFees     Boolean  @default(true)
+  examWeeks   Int      @default(2)
+  
+  // Relations
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  
+  // Multi-tenant
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  feeStructures FeeStructure[]
+  examinations  Examination[]
+  
+  @@unique([academicYearId, termNumber])
+  @@unique([name, academicYearId])
+  @@map("academic_terms")
+}
+
+// Enhanced Class model
 model Class {
   id            String   @id @default(cuid())
   name          String   // e.g., "Grade 10 A"
-  gradeLevel    Int      // 1-12
+  displayName   String?  // Custom display name
+  gradeLevel    Int      // 1-12 or custom levels
   section       String?  // A, B, C, etc.
   capacity      Int      @default(40)
+  
+  // Class configuration - Highly configurable for different curricula
+  classType     ClassType @default(REGULAR)
+  stream        String?   // Science, Arts, Commerce, Technical
+  language      String?   // Medium of instruction
+  curriculum    String?   // CBC, Cambridge, IB, etc.
   
   // Relations
   academicYearId String
@@ -206,9 +272,19 @@ model Class {
   // Relations
   students      Student[]
   subjects      ClassSubject[]
+  feeStructures FeeStructure[]
   
   @@unique([name, academicYearId, tenantId])
   @@map("classes")
+}
+
+enum ClassType {
+  REGULAR     // Regular class
+  HONORS      // Honors/Advanced class
+  SPECIAL     // Special needs class
+  BILINGUAL   // Bilingual class
+  VOCATIONAL  // Vocational/Technical class
+  PREP        // Preparatory class
 }
 
 model Subject {
@@ -219,6 +295,10 @@ model Subject {
   gradeLevel  Int      // Which grade this subject is for
   isCompulsory Boolean @default(true)
   credits     Int      @default(1)
+  
+  // Subject configuration
+  category    SubjectCategory @default(CORE)
+  department  String?  // Mathematics, Science, Languages, etc.
   
   // Multi-tenant
   tenantId    String
@@ -235,11 +315,24 @@ model Subject {
   @@map("subjects")
 }
 
+enum SubjectCategory {
+  CORE        // Core subjects (Math, English, etc.)
+  ELECTIVE    // Elective subjects
+  LANGUAGE    // Language subjects
+  SCIENCE     // Science subjects
+  ARTS        // Arts subjects
+  SPORTS      // Physical education
+  VOCATIONAL  // Vocational subjects
+}
+
 model ClassSubject {
   id        String @id @default(cuid())
   classId   String
   subjectId String
   teacherId String?
+  
+  // Subject configuration for this class
+  periodsPerWeek Int? @default(5)
   
   // Relations
   class     Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
@@ -264,7 +357,7 @@ model Student {
   classId       String
   class         Class    @relation(fields: [classId], references: [id])
   
-  // Multi-tenant (inherited from user)
+  // Multi-tenant
   tenantId      String
   tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   
@@ -278,6 +371,9 @@ model Student {
   // Timestamps
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  
+  // Relations
+  studentFees   StudentFee[]
   
   @@unique([rollNumber, tenantId])
   @@unique([admissionNumber, tenantId])
@@ -300,14 +396,14 @@ model Teacher {
   designation     String
   department      String?
   qualification   String?
-  experience      Int?     // in years
+  experience      Int?
   salary          Float?
   
   // Relations
   userId          String   @unique
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   
-  // Multi-tenant (inherited from user)
+  // Multi-tenant
   tenantId        String
   tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   
@@ -331,6 +427,248 @@ enum EmploymentStatus {
   INACTIVE
   TERMINATED
   RESIGNED
+}
+
+// Fee Structure System - Highly Configurable
+model FeeStructure {
+  id          String   @id @default(cuid())
+  name        String   // e.g., "Grade 10 Fees", "Annual Fees"
+  description String?
+  
+  // Structure configuration
+  feeType     FeeType  @default(TERM_WISE)
+  isRecurring Boolean  @default(true)
+  isOptional  Boolean  @default(false)
+  
+  // Applicable to
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  
+  academicTermId String?
+  academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id])
+  
+  classId        String?
+  class          Class? @relation(fields: [classId], references: [id])
+  
+  gradeLevel     Int?   // If applicable to specific grade level
+  
+  // Multi-tenant
+  tenantId       String
+  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  // Relations
+  feeComponents  FeeComponent[]
+  studentFees    StudentFee[]
+  
+  @@map("fee_structures")
+}
+
+enum FeeType {
+  ANNUAL      // Once per academic year
+  TERM_WISE   // Per term/semester
+  MONTHLY     // Monthly fees
+  ONE_TIME    // One-time fees (admission, etc.)
+  CUSTOM      // Custom schedule
+}
+
+model FeeComponent {
+  id          String   @id @default(cuid())
+  name        String   // e.g., "Tuition Fee", "Library Fee", "Lab Fee"
+  description String?
+  
+  // Amount configuration
+  amount      Float
+  currency    String   @default("USD")
+  
+  // Component configuration
+  isCompulsory Boolean @default(true)
+  category     FeeCategory @default(ACADEMIC)
+  
+  // Due date configuration
+  dueDate     DateTime?
+  lateFee     Float?    @default(0)
+  
+  // Relations
+  feeStructureId String
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  studentFeeComponents StudentFeeComponent[]
+  
+  @@map("fee_components")
+}
+
+enum FeeCategory {
+  ACADEMIC    // Tuition, books, etc.
+  FACILITIES  // Library, lab, sports
+  TRANSPORT   // Bus fees
+  HOSTEL      // Accommodation
+  MEALS       // Food/canteen
+  ACTIVITIES  // Extracurricular
+  TECHNOLOGY  // Computer, internet
+  UNIFORM     // School uniform
+  OTHER       // Miscellaneous
+}
+
+// Student fee tracking
+model StudentFee {
+  id          String   @id @default(cuid())
+  
+  // Relations
+  studentId      String
+  student        Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  feeStructureId String
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id])
+  
+  // Fee details
+  totalAmount    Float
+  paidAmount     Float    @default(0)
+  pendingAmount  Float
+  dueDate        DateTime?
+  
+  // Status
+  status         FeeStatus @default(PENDING)
+  
+  // Multi-tenant
+  tenantId       String
+  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  // Relations
+  components     StudentFeeComponent[]
+  payments       FeePayment[]
+  
+  @@unique([studentId, feeStructureId])
+  @@map("student_fees")
+}
+
+enum FeeStatus {
+  PENDING     // Not paid
+  PARTIAL     // Partially paid
+  PAID        // Fully paid
+  OVERDUE     // Past due date
+  WAIVED      // Fee waived
+}
+
+model StudentFeeComponent {
+  id          String   @id @default(cuid())
+  
+  // Relations
+  studentFeeId   String
+  studentFee     StudentFee @relation(fields: [studentFeeId], references: [id], onDelete: Cascade)
+  
+  feeComponentId String
+  feeComponent   FeeComponent @relation(fields: [feeComponentId], references: [id])
+  
+  // Component details
+  amount         Float
+  paidAmount     Float    @default(0)
+  status         FeeStatus @default(PENDING)
+  dueDate        DateTime?
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  @@map("student_fee_components")
+}
+
+model FeePayment {
+  id              String   @id @default(cuid())
+  
+  // Relations
+  studentFeeId    String
+  studentFee      StudentFee @relation(fields: [studentFeeId], references: [id])
+  
+  // Payment details
+  amount          Float
+  paymentMethod   PaymentMethod @default(CASH)
+  transactionId   String?
+  referenceNumber String?
+  
+  // Payment status
+  status          PaymentStatus @default(PENDING)
+  paidAt          DateTime?
+  
+  // Notes
+  notes           String?
+  
+  // Multi-tenant
+  tenantId        String
+  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("fee_payments")
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CREDIT_CARD
+  DEBIT_CARD
+  ONLINE
+  CHEQUE
+  MOBILE_MONEY  // For African markets
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+// Examination system
+model Examination {
+  id          String   @id @default(cuid())
+  name        String   // e.g., "Term 1 Examination", "Mid-term Test"
+  type        ExamType @default(TERM_EXAM)
+  
+  // Exam configuration
+  startDate   DateTime
+  endDate     DateTime
+  duration    Int?     // Duration in minutes per subject
+  maxMarks    Int      @default(100)
+  passingMarks Int     @default(40)
+  
+  // Relations
+  academicTermId String
+  academicTerm   AcademicTerm @relation(fields: [academicTermId], references: [id])
+  
+  // Multi-tenant
+  tenantId    String
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("examinations")
+}
+
+enum ExamType {
+  TERM_EXAM    // End of term examination
+  MID_TERM     // Mid-term test
+  UNIT_TEST    // Unit/chapter test
+  ASSESSMENT   // Continuous assessment
+  FINAL_EXAM   // Final examination
+  ENTRANCE     // Entrance examination
 }
 
 // Audit logging

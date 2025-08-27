@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class SystemService {
@@ -40,7 +39,6 @@ export class SystemService {
         this.getSystemVersion(),
       ]);
 
-      // Memory usage (simplified)
       const memoryUsage = process.memoryUsage();
 
       return {
@@ -168,33 +166,59 @@ export class SystemService {
   private async getLoginActivity() {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     
-    const dailyLogins = await this.prisma.$queryRaw`
-      SELECT 
-        DATE(last_login) as date,
-        COUNT(*) as logins
-      FROM users 
-      WHERE last_login >= ${sevenDaysAgo}
-      GROUP BY DATE(last_login)
-      ORDER BY date DESC
-    `;
+    // Get users who logged in within the last 7 days
+    const users = await this.prisma.user.findMany({
+      where: {
+        lastLogin: { gte: sevenDaysAgo }
+      },
+      select: {
+        lastLogin: true,
+      },
+    });
 
-    return dailyLogins;
+    // Group by date in JavaScript
+    const loginsByDate = users.reduce((acc, user) => {
+      if (user.lastLogin) {
+        const date = user.lastLogin.toISOString().split('T')[0]; // Get YYYY-MM-DD
+        acc[date] = (acc[date] || 0) + 1;
+      }
+      return acc;
+    }, {} as Record<string, number>);
+
+    // Convert to array and sort
+    const loginActivity = Object.entries(loginsByDate)
+      .map(([date, logins]) => ({ date, logins }))
+      .sort((a, b) => b.date.localeCompare(a.date)); // Sort by date descending
+
+    return loginActivity;
   }
 
   private async getTenantActivity() {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     
-    const tenantGrowth = await this.prisma.$queryRaw`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as new_tenants
-      FROM tenants 
-      WHERE created_at >= ${thirtyDaysAgo}
-      GROUP BY DATE(created_at)
-      ORDER BY date DESC
-    `;
+    // Get tenants created within the last 30 days
+    const tenants = await this.prisma.tenant.findMany({
+      where: {
+        createdAt: { gte: thirtyDaysAgo }
+      },
+      select: {
+        createdAt: true,
+      },
+    });
 
-    return tenantGrowth;
+    // Group by date in JavaScript
+    const tenantsByDate = tenants.reduce((acc, tenant) => {
+      const date = tenant.createdAt.toISOString().split('T')[0]; // Get YYYY-MM-DD
+      acc[date] = (acc[date] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    // Convert to array and sort
+    const tenantActivity = Object.entries(tenantsByDate)
+      .map(([date, new_tenants]) => ({ date, new_tenants }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    return tenantActivity;
   }
 
   private getSystemVersion() {
