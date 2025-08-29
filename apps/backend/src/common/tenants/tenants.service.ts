@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../database/prisma.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
@@ -208,90 +209,6 @@ export class TenantsService {
     });
   }
 
-  async remove(id: string) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: {
-            users: true,
-            students: true,
-            teachers: true,
-          },
-        },
-      },
-    });
-
-    if (!tenant) {
-      throw new NotFoundException('Tenant not found');
-    }
-
-    // Check if tenant has active users
-    if (tenant._count.users > 0) {
-      throw new BadRequestException('Cannot delete tenant with active users');
-    }
-
-    await this.prisma.tenant.delete({
-      where: { id },
-    });
-
-    return { message: 'Tenant deleted successfully' };
-  }
-
-  async getStats(id: string) {
-    const tenant = await this.findOne(id);
-    
-    const [
-      totalUsers,
-      activeUsers,
-      totalStudents,
-      totalTeachers,
-      totalClasses,
-      recentActivity,
-    ] = await Promise.all([
-      this.prisma.user.count({ where: { tenantId: id } }),
-      this.prisma.user.count({ 
-        where: { 
-          tenantId: id, 
-          isActive: true,
-          lastLogin: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
-        } 
-      }),
-      this.prisma.student.count({ where: { tenantId: id } }),
-      this.prisma.teacher.count({ where: { tenantId: id } }),
-      this.prisma.class.count({ where: { tenantId: id } }),
-      this.prisma.user.findMany({
-        where: { tenantId: id },
-        orderBy: { lastLogin: 'desc' },
-        take: 10,
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-          lastLogin: true,
-          userRoles: {
-            include: { role: true }
-          }
-        }
-      }),
-    ]);
-
-    return {
-      tenant,
-      stats: {
-        totalUsers,
-        activeUsers,
-        totalStudents,
-        totalTeachers,
-        totalClasses,
-        storageUsed: Math.floor(Math.random() * 1000), // Mock data
-        capacityUsed: Math.round((totalStudents / tenant.maxStudents) * 100),
-      },
-      recentActivity,
-    };
-  }
-
   private async createDefaultRoles(tenantId: string) {
     const defaultRoles = [
       {
@@ -335,4 +252,167 @@ export class TenantsService {
       });
     }
   }
+
+  async remove(id: string, adminPassword: string, adminUserId: string) {
+  // Verify admin password
+  const adminUser = await this.prisma.user.findUnique({
+    where: { id: adminUserId },
+  });
+
+  if (!adminUser) {
+    throw new UnauthorizedException('Admin user not found');
+  }
+
+  const isPasswordValid = await bcrypt.compare(adminPassword, adminUser.password);
+  if (!isPasswordValid) {
+    throw new UnauthorizedException('Invalid admin password');
+  }
+
+  const tenant = await this.prisma.tenant.findUnique({
+    where: { id },
+    include: {
+      _count: {
+        select: {
+          users: true,
+          students: true,
+          teachers: true,
+        },
+      },
+    },
+  });
+
+  if (!tenant) {
+    throw new NotFoundException('Tenant not found');
+  }
+
+  // Enhanced validation - prevent deletion of tenants with data
+  if (tenant._count.users > 1 || tenant._count.students > 0 || tenant._count.teachers > 0) {
+    throw new BadRequestException(
+      `Cannot delete tenant with existing data. Found: ${tenant._count.users} users, ${tenant._count.students} students, ${tenant._count.teachers} teachers. Please migrate or remove all data first.`
+    );
+  }
+
+  // Log the deletion attempt
+  await this.prisma.auditLog.create({
+    data: {
+      action: 'DELETE',
+      tableName: 'tenants',
+      recordId: id,
+      oldValues: tenant,
+      // newValues: null,
+      userId: adminUserId,
+      tenantId: id,
+    },
+  });
+
+  await this.prisma.tenant.delete({
+    where: { id },
+  });
+
+  return { 
+    message: 'Tenant deleted successfully',
+    deletedTenant: {
+      name: tenant.name,
+      domain: tenant.domain,
+      deletedAt: new Date().toISOString(),
+    }
+  };
+}
+
+// Enhanced stats with real storage calculation
+async getStats(id: string) {
+  const tenant = await this.findOne(id);
+  
+  const [
+    totalUsers,
+    activeUsers,
+    totalStudents,
+    totalTeachers,
+    totalClasses,
+    storageStats,
+    feePayments,
+    examinations,
+  ] = await Promise.all([
+    this.prisma.user.count({ where: { tenantId: id } }),
+    this.prisma.user.count({ 
+      where: { 
+        tenantId: id, 
+        isActive: true,
+        lastLogin: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+      } 
+    }),
+    this.prisma.student.count({ where: { tenantId: id } }),
+    this.prisma.teacher.count({ where: { tenantId: id } }),
+    this.prisma.class.count({ where: { tenantId: id } }),
+    this.calculateStorageUsage(id),
+    this.prisma.feePayment.aggregate({
+      where: { tenantId: id },
+      _sum: { amount: true },
+      _count: true,
+    }),
+    this.prisma.examination.count({ where: { tenantId: id } }),
+  ]);
+
+  return {
+    tenant,
+    stats: {
+      totalUsers,
+      activeUsers,
+      totalStudents,
+      totalTeachers,
+      totalClasses,
+      totalExaminations: examinations,
+      totalFeePayments: feePayments._count,
+      totalRevenue: feePayments._sum.amount || 0,
+      storageUsed: storageStats.totalSizeMB,
+      storageBreakdown: storageStats.breakdown,
+      capacityUsed: Math.round((totalStudents / tenant.maxStudents) * 100),
+      utilizationMetrics: {
+        classUtilization: totalClasses > 0 ? Math.round((totalStudents / (totalClasses * 40)) * 100) : 0, // Assuming 40 students per class average
+        teacherStudentRatio: totalTeachers > 0 ? Math.round(totalStudents / totalTeachers) : 0,
+        activeUserPercentage: totalUsers > 0 ? Math.round((activeUsers / totalUsers) * 100) : 0,
+      }
+    },
+  };
+}
+
+private async calculateStorageUsage(tenantId: string) {
+  // This is a simplified calculation - in production you'd want more sophisticated storage tracking
+  const [
+    userCount,
+    studentCount,
+    teacherCount,
+    classCount,
+    auditLogCount,
+    feeRecordCount,
+  ] = await Promise.all([
+    this.prisma.user.count({ where: { tenantId } }),
+    this.prisma.student.count({ where: { tenantId } }),
+    this.prisma.teacher.count({ where: { tenantId } }),
+    this.prisma.class.count({ where: { tenantId } }),
+    this.prisma.auditLog.count({ where: { tenantId } }),
+    this.prisma.feePayment.count({ where: { tenantId } }),
+  ]);
+
+  // Estimated storage per record type (in KB)
+  const estimatedSizeKB = 
+    userCount * 2 +        // 2KB per user
+    studentCount * 3 +     // 3KB per student (more data)
+    teacherCount * 2.5 +   // 2.5KB per teacher
+    classCount * 1 +       // 1KB per class
+    auditLogCount * 0.5 +  // 0.5KB per audit log
+    feeRecordCount * 1;    // 1KB per fee record
+
+  return {
+    totalSizeMB: Math.round(estimatedSizeKB / 1024 * 100) / 100, // Round to 2 decimal places
+    breakdown: {
+      users: Math.round(userCount * 2 / 1024 * 100) / 100,
+      students: Math.round(studentCount * 3 / 1024 * 100) / 100,
+      teachers: Math.round(teacherCount * 2.5 / 1024 * 100) / 100,
+      classes: Math.round(classCount * 1 / 1024 * 100) / 100,
+      auditLogs: Math.round(auditLogCount * 0.5 / 1024 * 100) / 100,
+      feeRecords: Math.round(feeRecordCount * 1 / 1024 * 100) / 100,
+    }
+  };
+}
 }

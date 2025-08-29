@@ -11,7 +11,13 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -33,17 +39,24 @@ export class UsersController {
   @ApiResponse({ status: 201, description: 'User created successfully' })
   @ApiResponse({ status: 403, description: 'Forbidden' })
   create(@Body() createUserDto: CreateUserDto, @CurrentUser() user: any) {
-    const isSuperAdmin = user.userRoles?.some(ur => ur.role.name === 'SuperAdmin');
+    const isSuperAdmin = user.userRoles?.some(
+      (ur: { role: { name: string } }) => ur.role.name === 'SuperAdmin',
+    );
     return this.usersService.create(createUserDto, user.tenantId, isSuperAdmin);
   }
 
   @Get('global')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get all users across all tenants (SuperAdmin only)' })
+  @ApiOperation({
+    summary: 'Get all users across all tenants (SuperAdmin only)',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'search', required: false, type: String })
-  @ApiResponse({ status: 200, description: 'Global users retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Global users retrieved successfully',
+  })
   findAllGlobal(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
@@ -71,7 +84,9 @@ export class UsersController {
   @ApiResponse({ status: 200, description: 'User retrieved successfully' })
   @ApiResponse({ status: 404, description: 'User not found' })
   findOne(@Param('id') id: string, @CurrentUser() user: any) {
-    const isSuperAdmin = user.userRoles?.some(ur => ur.role.name === 'SuperAdmin');
+    const isSuperAdmin = user.userRoles?.some(
+      (ur) => ur.role.name === 'SuperAdmin',
+    );
     return this.usersService.findOne(id, isSuperAdmin ? null : user.tenantId);
   }
 
@@ -85,8 +100,14 @@ export class UsersController {
     @Body() updateUserDto: UpdateUserDto,
     @CurrentUser() user: any,
   ) {
-    const isSuperAdmin = user.userRoles?.some(ur => ur.role.name === 'SuperAdmin');
-    return this.usersService.update(id, isSuperAdmin ? null : user.tenantId, updateUserDto);
+    const isSuperAdmin = user.userRoles?.some(
+      (ur) => ur.role.name === 'SuperAdmin',
+    );
+    return this.usersService.update(
+      id,
+      isSuperAdmin ? null : user.tenantId,
+      updateUserDto,
+    );
   }
 
   @Patch(':id/toggle-status')
@@ -94,8 +115,13 @@ export class UsersController {
   @ApiOperation({ summary: 'Toggle user active status' })
   @ApiResponse({ status: 200, description: 'User status updated successfully' })
   toggleStatus(@Param('id') id: string, @CurrentUser() user: any) {
-    const isSuperAdmin = user.userRoles?.some(ur => ur.role.name === 'SuperAdmin');
-    return this.usersService.toggleUserStatus(id, isSuperAdmin ? null : user.tenantId);
+    const isSuperAdmin = user.userRoles?.some(
+      (ur) => ur.role.name === 'SuperAdmin',
+    );
+    return this.usersService.toggleUserStatus(
+      id,
+      isSuperAdmin ? null : user.tenantId,
+    );
   }
 
   @Delete(':id')
@@ -104,7 +130,27 @@ export class UsersController {
   @ApiResponse({ status: 200, description: 'User deleted successfully' })
   @ApiResponse({ status: 404, description: 'User not found' })
   remove(@Param('id') id: string, @CurrentUser() user: any) {
-    const isSuperAdmin = user.userRoles?.some(ur => ur.role.name === 'SuperAdmin');
+    const isSuperAdmin = user.userRoles?.some(
+      (ur) => ur.role.name === 'SuperAdmin',
+    );
     return this.usersService.remove(id, isSuperAdmin ? null : user.tenantId);
+  }
+  @Patch(':id/roles')
+  @Roles('Admin', 'SuperAdmin')
+  @ApiOperation({ summary: 'Update user roles' })
+  @ApiResponse({ status: 200, description: 'User roles updated successfully' })
+  updateUserRoles(
+    @Param('id') id: string,
+    @Body() updateRolesDto: { roleIds: string[] },
+    @CurrentUser() user: any,
+  ) {
+    const isSuperAdmin = user.userRoles?.some(
+      (ur) => ur.role.name === 'SuperAdmin',
+    );
+    return this.usersService.updateUserRoles(
+      id,
+      updateRolesDto.roleIds,
+      isSuperAdmin ? null : user.tenantId,
+    );
   }
 }

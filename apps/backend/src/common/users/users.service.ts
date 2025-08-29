@@ -381,4 +381,39 @@ export class UsersService {
 
     return { message: 'Role removed successfully' };
   }
+
+  async updateUserRoles(userId: string, roleIds: string[], tenantId?: string) {
+  const whereClause: any = { id: userId }
+  if (tenantId) {
+    whereClause.tenantId = tenantId
+  }
+
+  const user = await this.prisma.user.findFirst({
+    where: whereClause,
+  })
+
+  if (!user) {
+    throw new NotFoundException('User not found')
+  }
+
+  // Remove existing roles
+  await this.prisma.userRole.deleteMany({
+    where: { userId },
+  })
+
+  // Add new roles
+  if (roleIds.length > 0) {
+    const userRoles = roleIds.map(roleId => ({
+      userId,
+      roleId,
+    }))
+
+    await this.prisma.userRole.createMany({
+      data: userRoles,
+    })
+  }
+
+  // Return updated user
+  return this.findOne(userId, tenantId)
+}
 }

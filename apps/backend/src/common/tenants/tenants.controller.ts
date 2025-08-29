@@ -11,14 +11,21 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { TenantsService } from './tenants.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
-import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+import { DeleteTenantDto } from './dto/update-tenant.dto';
+import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 
 @ApiTags('Tenants')
 @Controller('tenants')
@@ -38,7 +45,9 @@ export class TenantsController {
 
   @Get()
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get all tenants with pagination (SuperAdmin only)' })
+  @ApiOperation({
+    summary: 'Get all tenants with pagination (SuperAdmin only)',
+  })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'search', required: false, type: String })
@@ -52,7 +61,13 @@ export class TenantsController {
     @Query('planType') planType?: string,
     @Query('isActive') isActive?: boolean,
   ) {
-    return this.tenantsService.findAll({ page, limit, search, planType, isActive });
+    return this.tenantsService.findAll({
+      page,
+      limit,
+      search,
+      planType,
+      isActive,
+    });
   }
 
   @Get(':id')
@@ -76,25 +91,38 @@ export class TenantsController {
   @Patch(':id/toggle-status')
   @Roles('SuperAdmin')
   @ApiOperation({ summary: 'Toggle tenant active status (SuperAdmin only)' })
-  @ApiResponse({ status: 200, description: 'Tenant status updated successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Tenant status updated successfully',
+  })
   toggleStatus(@Param('id') id: string) {
     return this.tenantsService.toggleStatus(id);
-  }
-
-  @Delete(':id')
-  @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Delete tenant (SuperAdmin only)' })
-  @ApiResponse({ status: 200, description: 'Tenant deleted successfully' })
-  @ApiResponse({ status: 404, description: 'Tenant not found' })
-  remove(@Param('id') id: string) {
-    return this.tenantsService.remove(id);
   }
 
   @Get(':id/stats')
   @Roles('SuperAdmin')
   @ApiOperation({ summary: 'Get tenant statistics (SuperAdmin only)' })
-  @ApiResponse({ status: 200, description: 'Tenant statistics retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Tenant statistics retrieved successfully',
+  })
   getStats(@Param('id') id: string) {
     return this.tenantsService.getStats(id);
+  }
+
+  @Delete(':id')
+  @Roles('SuperAdmin')
+  @ApiOperation({
+    summary: 'Delete tenant with password confirmation (SuperAdmin only)',
+  })
+  @ApiResponse({ status: 200, description: 'Tenant deleted successfully' })
+  @ApiResponse({ status: 404, description: 'Tenant not found' })
+  @ApiResponse({ status: 401, description: 'Invalid password' })
+  remove(
+    @Param('id') id: string,
+    @Body() deleteDto: DeleteTenantDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.tenantsService.remove(id, deleteDto.adminPassword, user.id);
   }
 }
