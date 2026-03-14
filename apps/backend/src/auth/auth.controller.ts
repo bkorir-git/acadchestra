@@ -1,14 +1,19 @@
-import { 
-  Controller, 
-  Post, 
-  Body, 
-  UseGuards, 
-  Get, 
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Get,
   Patch,
   HttpCode,
-  HttpStatus 
+  HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
@@ -17,6 +22,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -67,6 +73,17 @@ export class AuthController {
   ) {
     // Implementation for password change
     return { message: 'Password changed successfully' };
+  }
+  @Patch('profile')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update user profile' })
+  @ApiResponse({ status: 200, description: 'Profile updated successfully' })
+  async updateProfile(
+    @CurrentUser() user: any,
+    @Body() updateProfileDto: UpdateProfileDto,
+  ) {
+    return this.authService.updateProfile(user.id, updateProfileDto);
   }
 
   @Post('logout')
