@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { CreateTeacherDto } from './dto/create-teacher.dto';
 
@@ -15,10 +19,10 @@ export class TeachersService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(createTeacherDto: CreateTeacherDto, tenantId: string) {
-    const { 
-      firstName, 
-      lastName, 
-      email, 
+    const {
+      firstName,
+      lastName,
+      email,
       phone,
       employeeId,
       designation,
@@ -26,7 +30,7 @@ export class TeachersService {
       qualification,
       experience,
       salary,
-      joiningDate
+      joiningDate,
     } = createTeacherDto;
 
     // Check if employee ID already exists
@@ -40,7 +44,9 @@ export class TeachersService {
     });
 
     if (existingTeacher) {
-      throw new ConflictException('Teacher with this employee ID already exists');
+      throw new ConflictException(
+        'Teacher with this employee ID already exists',
+      );
     }
 
     // Check if email already exists
@@ -181,6 +187,39 @@ export class TeachersService {
         limit,
         pages: Math.ceil(total / limit),
       },
+    };
+  }
+  async getTeacherStats(tenantId: string) {
+    const [totalTeachers, activeTeachers, totalClasses, totalSubjects] =
+      await Promise.all([
+        this.prisma.teacher.count({ where: { tenantId } }),
+        this.prisma.teacher.count({
+          where: {
+            tenantId,
+            employmentStatus: 'ACTIVE',
+            user: { isActive: true },
+          },
+        }),
+        this.prisma.class.count({
+          where: {
+            tenantId,
+            classTeacherId: { not: null },
+          },
+        }),
+        this.prisma.classSubject.count({
+          where: {
+            teacher: {
+              tenantId: tenantId,
+            },
+          },
+        }),
+      ]);
+
+    return {
+      totalTeachers,
+      activeTeachers,
+      totalClasses,
+      totalSubjects,
     };
   }
 
