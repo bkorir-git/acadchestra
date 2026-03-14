@@ -60,4 +60,4 @@ acadchestra/
 - **Mobile**: React Native (planned)
 - **Infrastructure**: Docker, AWS, Kubernetes
 
-© 2025 Acadchestra - Orchestrating Education Excellence
+© 2026 Acadchestra - Orchestrating Education Excellence
