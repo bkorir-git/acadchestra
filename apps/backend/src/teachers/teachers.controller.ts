@@ -11,7 +11,13 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { TeachersService } from './teachers.service';
 import { CreateTeacherDto } from './dto/create-teacher.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -66,6 +72,16 @@ export class TeachersController {
   @ApiResponse({ status: 200, description: 'Teacher retrieved successfully' })
   findOne(@Param('id') id: string, @CurrentUser() user: any) {
     return this.teachersService.findOne(id, user.tenantId);
+  }
+  @Get('stats')
+  @Roles('Admin', 'Principal')
+  @ApiOperation({ summary: 'Get teacher statistics' })
+  @ApiResponse({
+    status: 200,
+    description: 'Teacher statistics retrieved successfully',
+  })
+  getStats(@CurrentUser() user: any) {
+    return this.teachersService.getTeacherStats(user.tenantId);
   }
 
   @Delete(':id')
