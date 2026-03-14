@@ -175,7 +175,7 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-// Enhanced Academic Structure
+// Academic Structure
 model AcademicYear {
   id        String   @id @default(cuid())
   name      String   // e.g., "2024-2025"
@@ -239,7 +239,7 @@ model AcademicTerm {
   @@map("academic_terms")
 }
 
-// Enhanced Class model
+// Class model
 model Class {
   id            String   @id @default(cuid())
   name          String   // e.g., "Grade 10 A"
@@ -248,7 +248,7 @@ model Class {
   section       String?  // A, B, C, etc.
   capacity      Int      @default(40)
   
-  // Class configuration - Highly configurable for different curricula
+  // Class configuration - configurable for different curricula
   classType     ClassType @default(REGULAR)
   stream        String?   // Science, Arts, Commerce, Technical
   language      String?   // Medium of instruction
@@ -429,7 +429,7 @@ enum EmploymentStatus {
   RESIGNED
 }
 
-// Fee Structure System - Highly Configurable
+// Fee Structure System - Configurable
 model FeeStructure {
   id          String   @id @default(cuid())
   name        String   // e.g., "Grade 10 Fees", "Annual Fees"
@@ -623,7 +623,7 @@ enum PaymentMethod {
   DEBIT_CARD
   ONLINE
   CHEQUE
-  MOBILE_MONEY  // For African markets
+  MOBILE_MONEY
   OTHER
 }
 
