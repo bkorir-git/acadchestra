@@ -14,7 +14,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/kiprutokels/acadchestra.git
+git clone https://github.com/korirke/acadchestra.git
 cd acadchestra
 
 # Install dependencies
