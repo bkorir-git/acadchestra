@@ -21,6 +21,7 @@ model Tenant {
   address     String?
   logo        String?
   website     String?
+  settings      TenantSettings?
   
   // Subscription details
   planType    PlanType @default(LITE)
@@ -627,6 +628,7 @@ enum ActivityAction {
 
 enum ActivityEntityType {
   TENANT
+  TENANT_SETTINGS
   USER
   ACADEMIC_YEAR
   ACADEMIC_TERM
@@ -640,4 +642,92 @@ enum ActivityEntityType {
   FEE_ALLOCATION
   EXAMINATION
   ROLE
+  
+}
+
+
+enum CurrencyPosition {
+  BEFORE
+  AFTER
+}
+
+enum TimeFormat {
+  H12
+  H24
+}
+
+model TenantSettings {
+  id                       String           @id @default(cuid())
+  tenantId                 String           @unique
+  tenant                   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // ─── Localization ───
+  currency                 String           @default("KES")     // ISO 4217 code
+  currencySymbol           String           @default("KSh")
+  currencyPosition         CurrencyPosition @default(BEFORE)
+  currencyDecimals         Int              @default(2)
+  timezone                 String           @default("Africa/Nairobi")
+  locale                   String           @default("en-KE")
+  dateFormat               String           @default("DD/MM/YYYY")
+  timeFormat               TimeFormat       @default(H24)
+  firstDayOfWeek           Int              @default(1)          // 0=Sun, 1=Mon
+
+  // ─── Branding ───
+  logoUrl                  String?
+  faviconUrl               String?
+  primaryColor             String           @default("#3b82f6")
+  secondaryColor           String           @default("#8b5cf6")
+  brandTagline             String?
+
+  // ─── Academic ───
+  defaultGradingScale      String           @default("PERCENTAGE")
+  passingGrade             Float            @default(50)
+  attendanceThreshold      Float            @default(75)
+
+  // ─── Fee Settings ───
+  receiptPrefix            String           @default("RCP")
+  invoicePrefix            String           @default("INV")
+  enableLateFees           Boolean          @default(false)
+  lateFeePercentage        Float            @default(0)
+  lateFeeGraceDays         Int              @default(0)
+  enabledPaymentMethods    Json             @default("[\"CASH\",\"MOBILE_MONEY\",\"BANK_TRANSFER\",\"CHEQUE\"]")
+  allowPartialPayments     Boolean          @default(true)
+  allowOverpayment         Boolean          @default(false)
+  requirePaymentReference  Boolean          @default(false)
+
+  // ─── Notifications ───
+  enableEmailNotifications Boolean          @default(true)
+  enableSmsNotifications   Boolean          @default(false)
+  enablePushNotifications  Boolean          @default(false)
+  feeReminderDays          Json             @default("[7,3,1]")   // array of ints
+
+  // ─── Security ───
+  sessionTimeoutMinutes    Int              @default(60)
+  passwordMinLength        Int              @default(8)
+  passwordRequireUppercase Boolean          @default(true)
+  passwordRequireNumber    Boolean          @default(true)
+  passwordRequireSymbol    Boolean          @default(false)
+  requireTwoFactor         Boolean          @default(false)
+  maxLoginAttempts         Int              @default(5)
+  lockoutDurationMinutes   Int              @default(15)
+
+  // ─── Communications ───
+  emailSenderName          String?
+  emailSenderAddress       String?
+  smsProvider              String?          // AFRICAS_TALKING | TWILIO | etc
+  smsSenderId              String?
+
+  // ─── Feature Flags ───
+  enableParentPortal       Boolean          @default(true)
+  enableStudentPortal      Boolean          @default(true)
+  enableOnlinePayments     Boolean          @default(false)
+  enableBulkImport         Boolean          @default(true)
+
+  // ─── Custom ───
+  customFields             Json?
+
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+
+  @@map("tenant_settings")
 }
