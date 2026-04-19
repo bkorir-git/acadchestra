@@ -372,6 +372,11 @@ model FeeStructure {
   feeType        FeeType       @default(TERM_WISE)
   isRecurring    Boolean       @default(true)
   isOptional     Boolean       @default(false)
+
+  isLocked       Boolean       @default(false)
+  lockedAt       DateTime?
+  lockedReason   String?
+
   academicYearId String
   academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id])
   academicTermId String?
@@ -386,6 +391,8 @@ model FeeStructure {
   feeComponents  FeeComponent[]
   studentFees    StudentFee[]
 
+  @@index([tenantId, academicYearId, academicTermId])
+  @@index([tenantId, classId, gradeLevel])
   @@map("fee_structures")
 }
 
@@ -402,11 +409,12 @@ model FeeComponent {
   name                 String
   description          String?
   amount               Float
-  currency             String               @default("USD")
+  currency             String               @default("KES")
   isCompulsory         Boolean              @default(true)
   category             FeeCategory          @default(ACADEMIC)
   dueDate              DateTime?
   lateFee              Float?               @default(0)
+  sortOrder            Int                  @default(0)  // FIFO ordering
   feeStructureId       String
   feeStructure         FeeStructure         @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
   createdAt            DateTime             @default(now())
@@ -448,6 +456,8 @@ model StudentFee {
   payments       FeePayment[]
 
   @@unique([studentId, feeStructureId])
+  @@index([tenantId, status])
+  @@index([tenantId, studentId])
   @@map("student_fees")
 }
 
@@ -460,38 +470,66 @@ enum FeeStatus {
 }
 
 model StudentFeeComponent {
-  id             String     @id @default(cuid())
+  id             String       @id @default(cuid())
   studentFeeId   String
-  studentFee     StudentFee @relation(fields: [studentFeeId], references: [id], onDelete: Cascade)
+  studentFee     StudentFee   @relation(fields: [studentFeeId], references: [id], onDelete: Cascade)
   feeComponentId String
   feeComponent   FeeComponent @relation(fields: [feeComponentId], references: [id])
+  name           String       // snapshot name
   amount         Float
-  paidAmount     Float      @default(0)
-  status         FeeStatus  @default(PENDING)
+  paidAmount     Float        @default(0)
+  sortOrder      Int          @default(0)
+  status         FeeStatus    @default(PENDING)
   dueDate        DateTime?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  allocations    FeePaymentAllocation[]
 
+  @@unique([studentFeeId, feeComponentId])
+  @@index([studentFeeId, sortOrder])
   @@map("student_fee_components")
 }
 
 model FeePayment {
   id              String        @id @default(cuid())
+  receiptNumber   String        // unique per tenant
   studentFeeId    String
   studentFee      StudentFee    @relation(fields: [studentFeeId], references: [id])
   amount          Float
+  allocatedAmount Float         @default(0)
   paymentMethod   PaymentMethod @default(CASH)
-  transactionId   String?
-  referenceNumber String?
-  status          PaymentStatus @default(PENDING)
-  paidAt          DateTime?
+  transactionId   String?       // external ref (M-Pesa code etc)
+  referenceNumber String?       // bank slip / cheque no
+  status          PaymentStatus @default(COMPLETED)
+  paidAt          DateTime      @default(now())
+  voidedAt        DateTime?
+  voidReason      String?
   notes           String?
+  recordedById    String?
   tenantId        String
   tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+  allocations     FeePaymentAllocation[]
 
+  @@unique([receiptNumber, tenantId])
+  @@index([tenantId, paidAt])
+  @@index([tenantId, paymentMethod])
   @@map("fee_payments")
+}
+
+model FeePaymentAllocation {
+  id                   String              @id @default(cuid())
+  feePaymentId         String
+  feePayment           FeePayment          @relation(fields: [feePaymentId], references: [id], onDelete: Cascade)
+  studentFeeComponentId String
+  studentFeeComponent   StudentFeeComponent @relation(fields: [studentFeeComponentId], references: [id], onDelete: Cascade)
+  amount               Float
+  createdAt            DateTime            @default(now())
+
+  @@index([feePaymentId])
+  @@index([studentFeeComponentId])
+  @@map("fee_payment_allocations")
 }
 
 enum PaymentMethod {
@@ -598,6 +636,8 @@ enum ActivityEntityType {
   FEE_STRUCTURE
   STUDENT_FEE
   FEE_PAYMENT
+  FEE_COMPONENT
+  FEE_ALLOCATION
   EXAMINATION
   ROLE
 }
