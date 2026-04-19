@@ -1,5 +1,7 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// =============================================================================
+// PRISMA SCHEMA — Acadchestra
+// Learn more: https://pris.ly/d/prisma-schema
+// =============================================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -10,50 +12,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Multi-tenant model - Schools/Organizations
-model Tenant {
-  id          String   @id @default(cuid())
-  name        String
-  domain      String   @unique
-  subdomain   String?  @unique
-  email       String
-  phone       String?
-  address     String?
-  logo        String?
-  website     String?
-  settings      TenantSettings?
-  
-  // Subscription details
-  planType    PlanType @default(LITE)
-  isActive    Boolean  @default(true)
-  maxStudents Int      @default(100)
-  
-  // Academic configuration
-  termStructure    TermStructure @default(THREE_TERMS)
-  gradeStructure   Json? // Store grade/level structure configuration
-  feeConfiguration Json? // Store fee calculation rules
-  
-  // Timestamps
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
-  // Relations
-  users       User[]
-  roles       Role[]
-  academicYears AcademicYear[]
-  academicTerms AcademicTerm[]
-  classes       Class[]
-  subjects      Subject[]
-  students      Student[]
-  teachers      Teacher[]
-  feeStructures FeeStructure[]
-  studentFees   StudentFee[]
-  feePayments   FeePayment[]
-  examinations  Examination[]
-  activityLogs  ActivityLog[]
+// =============================================================================
+// ENUMS
+// =============================================================================
 
-  @@map("tenants")
-}
+// ── Tenant ────────────────────────────────────────────────────────────────────
 
 enum PlanType {
   LITE
@@ -63,43 +26,13 @@ enum PlanType {
 }
 
 enum TermStructure {
-  TWO_SEMESTERS   // Semester 1, Semester 2
-  THREE_TERMS     // Term 1, Term 2, Term 3
-  FOUR_QUARTERS   // Quarter 1, Quarter 2, Quarter 3, Quarter 4
-  CUSTOM          // Configurable terms
+  TWO_SEMESTERS // Semester 1, Semester 2
+  THREE_TERMS   // Term 1, Term 2, Term 3
+  FOUR_QUARTERS // Quarter 1, Quarter 2, Quarter 3, Quarter 4
+  CUSTOM        // Configurable terms
 }
 
-// User management with RBAC
-model User {
-  id          String   @id @default(cuid())
-  email       String   @unique
-  username    String?  @unique
-  password    String
-  
-  // Personal info
-  firstName   String
-  lastName    String
-  phone       String?
-  avatar      String?
-  dateOfBirth DateTime?
-  gender      Gender?
-  
-  // Security
-  isEmailVerified Boolean @default(false)
-  isTwoFactorEnabled Boolean @default(false)
-  lastLogin         DateTime?
-  isActive          Boolean  @default(true)
-  tenantId          String
-  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  userRoles         UserRole[]
-  student           Student?
-  teacher           Teacher?
-  activityLogs      ActivityLog[]
-
-  @@map("users")
-}
+// ── Users & Auth ──────────────────────────────────────────────────────────────
 
 enum Gender {
   MALE
@@ -107,84 +40,7 @@ enum Gender {
   OTHER
 }
 
-// Role-based access control
-model Role {
-  id              String   @id @default(cuid())
-  name            String
-  description     String?
-  isSystem        Boolean  @default(false)
-  tenantId        String
-  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  userRoles       UserRole[]
-  rolePermissions RolePermission[]
-
-  @@unique([name, tenantId])
-  @@map("roles")
-}
-
-model Permission {
-  id              String   @id @default(cuid())
-  resource        String
-  action          String
-  description     String?
-  rolePermissions RolePermission[]
-
-  @@unique([resource, action])
-  @@map("permissions")
-}
-
-model UserRole {
-  id        String   @id @default(cuid())
-  userId    String
-  roleId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-
-  @@unique([userId, roleId])
-  @@map("user_roles")
-}
-
-model RolePermission {
-  id           String     @id @default(cuid())
-  roleId       String
-  permissionId String
-  
-  // Relations
-  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
-
-  @@unique([roleId, permissionId])
-  @@map("role_permissions")
-}
-
-// Academic Structure
-model AcademicYear {
-  id            String             @id @default(cuid())
-  name          String
-  startDate     DateTime
-  endDate       DateTime
-  isCurrent     Boolean            @default(false)
-  termStructure TermStructure      @default(THREE_TERMS)
-  totalTerms    Int                @default(3)
-  status        AcademicYearStatus @default(DRAFT)
-  isLocked      Boolean            @default(false)
-  lockedAt      DateTime?
-  lockedReason  String?
-  tenantId      String
-  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-  classes       Class[]
-  terms         AcademicTerm[]
-  feeStructures FeeStructure[]
-
-  @@unique([name, tenantId])
-  @@index([tenantId, isCurrent, status])
-  @@map("academic_years")
-}
+// ── Academic ──────────────────────────────────────────────────────────────────
 
 enum AcademicYearStatus {
   DRAFT
@@ -193,89 +49,13 @@ enum AcademicYearStatus {
   LOCKED
 }
 
-model AcademicTerm {
-  id             String         @id @default(cuid())
-  name           String
-  shortName      String
-  termNumber     Int
-  startDate      DateTime
-  endDate        DateTime
-  isActive       Boolean        @default(false)
-  hasExams       Boolean        @default(true)
-  hasFees        Boolean        @default(true)
-  examWeeks      Int            @default(2)
-  isLocked       Boolean        @default(false)
-  lockedAt       DateTime?
-  lockedReason   String?
-  academicYearId String
-  academicYear   AcademicYear   @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
-  tenantId       String
-  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  feeStructures  FeeStructure[]
-  examinations   Examination[]
-
-  @@unique([academicYearId, termNumber])
-  @@unique([name, academicYearId])
-  @@index([tenantId, academicYearId, startDate, endDate])
-  @@map("academic_terms")
-}
-
-model Class {
-  id             String    @id @default(cuid())
-  name           String
-  displayName    String?
-  gradeLevel     Int
-  section        String?
-  capacity       Int       @default(40)
-  classType      ClassType @default(REGULAR)
-  stream         String?
-  language       String?
-  curriculum     String?
-  academicYearId String
-  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
-  classTeacherId String?
-  classTeacher   Teacher?  @relation(fields: [classTeacherId], references: [id])
-  tenantId       String
-  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  students       Student[]
-  subjects       ClassSubject[]
-  feeStructures  FeeStructure[]
-
-  @@unique([name, academicYearId, tenantId])
-  @@map("classes")
-}
-
 enum ClassType {
-  REGULAR     // Regular class
-  HONORS      // Honors/Advanced class
-  SPECIAL     // Special needs class
-  BILINGUAL   // Bilingual class
-  VOCATIONAL  // Vocational/Technical class
-  PREP        // Preparatory class
-}
-
-model Subject {
-  id           String          @id @default(cuid())
-  name         String
-  code         String
-  description  String?
-  gradeLevel   Int
-  isCompulsory Boolean         @default(true)
-  credits      Int             @default(1)
-  category     SubjectCategory @default(CORE)
-  department   String?
-  tenantId     String
-  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  classes      ClassSubject[]
-
-  @@unique([code, tenantId])
-  @@map("subjects")
+  REGULAR    // Regular class
+  HONORS     // Honors/Advanced class
+  SPECIAL    // Special needs class
+  BILINGUAL  // Bilingual class
+  VOCATIONAL // Vocational/Technical class
+  PREP       // Preparatory class
 }
 
 enum SubjectCategory {
@@ -288,74 +68,12 @@ enum SubjectCategory {
   VOCATIONAL
 }
 
-model ClassSubject {
-  id             String   @id @default(cuid())
-  classId        String
-  subjectId      String
-  teacherId      String?
-  periodsPerWeek Int?     @default(5)
-  class          Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
-  subject        Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  teacher        Teacher? @relation(fields: [teacherId], references: [id])
-
-  @@unique([classId, subjectId])
-  @@map("class_subjects")
-}
-
-// Student management
-model Student {
-  id              String        @id @default(cuid())
-  rollNumber      String
-  admissionNumber String
-  admissionDate   DateTime
-  userId          String        @unique
-  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  classId         String
-  class           Class         @relation(fields: [classId], references: [id])
-  tenantId        String
-  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  academicStatus  StudentStatus @default(ACTIVE)
-  emergencyContact String?
-  emergencyPhone  String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  studentFees     StudentFee[]
-
-  @@unique([rollNumber, tenantId])
-  @@unique([admissionNumber, tenantId])
-  @@map("students")
-}
-
 enum StudentStatus {
   ACTIVE
   INACTIVE
   GRADUATED
   TRANSFERRED
   DROPPED
-}
-
-// Teacher/Staff management
-model Teacher {
-  id               String           @id @default(cuid())
-  employeeId       String
-  joiningDate      DateTime
-  designation      String
-  department       String?
-  qualification    String?
-  experience       Int?
-  salary           Float?
-  userId           String           @unique
-  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenantId         String
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  employmentStatus EmploymentStatus @default(ACTIVE)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-  classesAsTeacher Class[]
-  subjectsTaught   ClassSubject[]
-
-  @@unique([employeeId, tenantId])
-  @@map("teachers")
 }
 
 enum EmploymentStatus {
@@ -365,37 +83,16 @@ enum EmploymentStatus {
   RESIGNED
 }
 
-// Fee Structure System - Configurable
-model FeeStructure {
-  id             String        @id @default(cuid())
-  name           String
-  description    String?
-  feeType        FeeType       @default(TERM_WISE)
-  isRecurring    Boolean       @default(true)
-  isOptional     Boolean       @default(false)
-
-  isLocked       Boolean       @default(false)
-  lockedAt       DateTime?
-  lockedReason   String?
-
-  academicYearId String
-  academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id])
-  academicTermId String?
-  academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id])
-  classId        String?
-  class          Class?        @relation(fields: [classId], references: [id])
-  gradeLevel     Int?
-  tenantId       String
-  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  feeComponents  FeeComponent[]
-  studentFees    StudentFee[]
-
-  @@index([tenantId, academicYearId, academicTermId])
-  @@index([tenantId, classId, gradeLevel])
-  @@map("fee_structures")
+enum ExamType {
+  TERM_EXAM
+  MID_TERM
+  UNIT_TEST
+  ASSESSMENT
+  FINAL_EXAM
+  ENTRANCE
 }
+
+// ── Fees ──────────────────────────────────────────────────────────────────────
 
 enum FeeType {
   ANNUAL
@@ -403,26 +100,6 @@ enum FeeType {
   MONTHLY
   ONE_TIME
   CUSTOM
-}
-
-model FeeComponent {
-  id                   String               @id @default(cuid())
-  name                 String
-  description          String?
-  amount               Float
-  currency             String               @default("KES")
-  isCompulsory         Boolean              @default(true)
-  category             FeeCategory          @default(ACADEMIC)
-  dueDate              DateTime?
-  lateFee              Float?               @default(0)
-  sortOrder            Int                  @default(0)  // FIFO ordering
-  feeStructureId       String
-  feeStructure         FeeStructure         @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-  studentFeeComponents StudentFeeComponent[]
-
-  @@map("fee_components")
 }
 
 enum FeeCategory {
@@ -437,29 +114,10 @@ enum FeeCategory {
   OTHER
 }
 
-// Student fee tracking
-model StudentFee {
-  id             String               @id @default(cuid())
-  studentId      String
-  student        Student              @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  feeStructureId String
-  feeStructure   FeeStructure         @relation(fields: [feeStructureId], references: [id])
-  totalAmount    Float
-  paidAmount     Float                @default(0)
-  pendingAmount  Float
-  dueDate        DateTime?
-  status         FeeStatus            @default(PENDING)
-  tenantId       String
-  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
-  components     StudentFeeComponent[]
-  payments       FeePayment[]
-
-  @@unique([studentId, feeStructureId])
-  @@index([tenantId, status])
-  @@index([tenantId, studentId])
-  @@map("student_fees")
+enum FeeStructureScope {
+  SCHOOL_WIDE    // One structure for the whole school with per-class levels
+  CLASS_SPECIFIC // Targets a single class
+  GRADE_SPECIFIC // Targets a single grade level
 }
 
 enum FeeStatus {
@@ -470,67 +128,12 @@ enum FeeStatus {
   WAIVED
 }
 
-model StudentFeeComponent {
-  id             String       @id @default(cuid())
-  studentFeeId   String
-  studentFee     StudentFee   @relation(fields: [studentFeeId], references: [id], onDelete: Cascade)
-  feeComponentId String
-  feeComponent   FeeComponent @relation(fields: [feeComponentId], references: [id])
-  name           String       // snapshot name
-  amount         Float
-  paidAmount     Float        @default(0)
-  sortOrder      Int          @default(0)
-  status         FeeStatus    @default(PENDING)
-  dueDate        DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  allocations    FeePaymentAllocation[]
-
-  @@unique([studentFeeId, feeComponentId])
-  @@index([studentFeeId, sortOrder])
-  @@map("student_fee_components")
-}
-
-model FeePayment {
-  id              String        @id @default(cuid())
-  receiptNumber   String        // unique per tenant
-  studentFeeId    String
-  studentFee      StudentFee    @relation(fields: [studentFeeId], references: [id])
-  amount          Float
-  allocatedAmount Float         @default(0)
-  paymentMethod   PaymentMethod @default(CASH)
-  transactionId   String?       // external ref (M-Pesa code etc)
-  referenceNumber String?       // bank slip / cheque no
-  status          PaymentStatus @default(COMPLETED)
-  paidAt          DateTime      @default(now())
-  voidedAt        DateTime?
-  voidReason      String?
-  notes           String?
-  recordedById    String?
-  tenantId        String
-  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  allocations     FeePaymentAllocation[]
-
-  @@unique([receiptNumber, tenantId])
-  @@index([tenantId, paidAt])
-  @@index([tenantId, paymentMethod])
-  @@map("fee_payments")
-}
-
-model FeePaymentAllocation {
-  id                   String              @id @default(cuid())
-  feePaymentId         String
-  feePayment           FeePayment          @relation(fields: [feePaymentId], references: [id], onDelete: Cascade)
-  studentFeeComponentId String
-  studentFeeComponent   StudentFeeComponent @relation(fields: [studentFeeComponentId], references: [id], onDelete: Cascade)
-  amount               Float
-  createdAt            DateTime            @default(now())
-
-  @@index([feePaymentId])
-  @@index([studentFeeComponentId])
-  @@map("fee_payment_allocations")
+enum LedgerEntryType {
+  DEBIT      // Fee charged (student now owes)
+  CREDIT     // Payment received
+  REVERSAL   // Payment voided / fee removed
+  ADJUSTMENT // Manual correction
+  WAIVER     // Fee waived by admin
 }
 
 enum PaymentMethod {
@@ -551,69 +154,19 @@ enum PaymentStatus {
   REFUNDED
 }
 
-// Examination system
-model Examination {
-  id            String   @id @default(cuid())
-  name          String
-  type          ExamType @default(TERM_EXAM)
-  startDate     DateTime
-  endDate       DateTime
-  duration      Int?
-  maxMarks      Int      @default(100)
-  passingMarks  Int      @default(40)
-  academicTermId String
-  academicTerm  AcademicTerm @relation(fields: [academicTermId], references: [id])
-  tenantId      String
-  tenant        Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+// ── Settings ──────────────────────────────────────────────────────────────────
 
-  @@map("examinations")
+enum CurrencyPosition {
+  BEFORE
+  AFTER
 }
 
-enum ExamType {
-  TERM_EXAM
-  MID_TERM
-  UNIT_TEST
-  ASSESSMENT
-  FINAL_EXAM
-  ENTRANCE
+enum TimeFormat {
+  H12
+  H24
 }
 
-// Audit logging
-model AuditLog {
-  id        String   @id @default(cuid())
-  action    String
-  tableName String
-  recordId  String
-  oldValues Json?
-  newValues Json?
-  userId    String
-  tenantId  String
-  createdAt DateTime @default(now())
-
-  @@map("audit_logs")
-}
-
-model ActivityLog {
-  id         String             @id @default(cuid())
-  action     ActivityAction
-  entityType ActivityEntityType
-  entityId   String
-  message    String
-  metadata   Json?
-  userId     String?
-  user       User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
-  tenantId   String?
-  tenant     Tenant?            @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  createdAt  DateTime           @default(now())
-
-  @@index([tenantId, createdAt])
-  @@index([userId, createdAt])
-  @@index([action, createdAt])
-  @@index([entityType, createdAt])
-  @@map("activity_logs")
-}
+// ── Activity Logs ─────────────────────────────────────────────────────────────
 
 enum ActivityAction {
   CREATE
@@ -642,92 +195,832 @@ enum ActivityEntityType {
   FEE_ALLOCATION
   EXAMINATION
   ROLE
-  
+  FEE_STRUCTURE_LEVEL
+  FEE_LEDGER
+  TERM_ACTIVATION_BILLING
 }
 
+// =============================================================================
+// MODELS
+// =============================================================================
 
-enum CurrencyPosition {
-  BEFORE
-  AFTER
+// ── Multi-Tenant ──────────────────────────────────────────────────────────────
+
+/// Schools / Organizations — top-level tenant record
+model Tenant {
+  id        String  @id @default(cuid())
+  name      String
+  domain    String  @unique
+  subdomain String? @unique
+  email     String
+  phone     String?
+  address   String?
+  logo      String?
+  website   String?
+
+  // Subscription
+  planType    PlanType @default(LITE)
+  isActive    Boolean  @default(true)
+  maxStudents Int      @default(100)
+
+  // Academic configuration
+  termStructure    TermStructure @default(THREE_TERMS)
+  gradeStructure   Json?         // Grade/level structure configuration
+  feeConfiguration Json?         // Fee calculation rules
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  settings         TenantSettings?
+  users            User[]
+  roles            Role[]
+  academicYears    AcademicYear[]
+  academicTerms    AcademicTerm[]
+  classes          Class[]
+  subjects         Subject[]
+  students         Student[]
+  teachers         Teacher[]
+  feeStructures    FeeStructure[]
+  studentFees      StudentFee[]
+  feePayments      FeePayment[]
+  examinations     Examination[]
+  activityLogs     ActivityLog[]
+  feeStructureLevels FeeStructureLevel[]
+  feeLedgerEntries FeeLedger[]
+
+  @@map("tenants")
 }
 
-enum TimeFormat {
-  H12
-  H24
+// ── Users & RBAC ──────────────────────────────────────────────────────────────
+
+/// Application user — linked to exactly one tenant
+model User {
+  id       String  @id @default(cuid())
+  email    String  @unique
+  username String? @unique
+  password String
+
+  // Personal info
+  firstName   String
+  lastName    String
+  phone       String?
+  avatar      String?
+  dateOfBirth DateTime?
+  gender      Gender?
+
+  // Security
+  isEmailVerified    Boolean   @default(false)
+  isTwoFactorEnabled Boolean   @default(false)
+  lastLogin          DateTime?
+  isActive           Boolean   @default(true)
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  userRoles    UserRole[]
+  student      Student?
+  teacher      Teacher?
+  activityLogs ActivityLog[]
+
+  @@map("users")
 }
 
+/// Named role scoped to a tenant
+model Role {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  isSystem    Boolean @default(false)
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@unique([name, tenantId])
+  @@map("roles")
+}
+
+/// Granular permission (resource + action)
+model Permission {
+  id          String  @id @default(cuid())
+  resource    String
+  action      String
+  description String?
+
+  // Relations
+  rolePermissions RolePermission[]
+
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+/// Many-to-many: User ↔ Role
+model UserRole {
+  id     String @id @default(cuid())
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+/// Many-to-many: Role ↔ Permission
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ── Academic Structure ────────────────────────────────────────────────────────
+
+/// Top-level academic container (e.g. "2024–2025")
+model AcademicYear {
+  id            String             @id @default(cuid())
+  name          String
+  startDate     DateTime
+  endDate       DateTime
+  isCurrent     Boolean            @default(false)
+  termStructure TermStructure      @default(THREE_TERMS)
+  totalTerms    Int                @default(3)
+  status        AcademicYearStatus @default(DRAFT)
+  isLocked      Boolean            @default(false)
+  lockedAt      DateTime?
+  lockedReason  String?
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  classes       Class[]
+  terms         AcademicTerm[]
+  feeStructures FeeStructure[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId, isCurrent, status])
+  @@map("academic_years")
+}
+
+/// A single term / semester within an academic year
+model AcademicTerm {
+  id           String   @id @default(cuid())
+  name         String
+  shortName    String
+  termNumber   Int
+  startDate    DateTime
+  endDate      DateTime
+  isActive     Boolean  @default(false)
+  hasExams     Boolean  @default(true)
+  hasFees      Boolean  @default(true)
+  examWeeks    Int      @default(2)
+  isLocked     Boolean  @default(false)
+  lockedAt     DateTime?
+  lockedReason String?
+
+  // Parent year
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  feeStructures FeeStructure[]
+  examinations  Examination[]
+
+  @@unique([academicYearId, termNumber])
+  @@unique([name, academicYearId])
+  @@index([tenantId, academicYearId, startDate, endDate])
+  @@map("academic_terms")
+}
+
+/// A class / section for a given academic year
+model Class {
+  id          String    @id @default(cuid())
+  name        String
+  displayName String?
+  gradeLevel  Int
+  section     String?
+  capacity    Int       @default(40)
+  classType   ClassType @default(REGULAR)
+  stream      String?
+  language    String?
+  curriculum  String?
+
+  // Parent year
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+
+  // Class teacher
+  classTeacherId String?
+  classTeacher   Teacher? @relation(fields: [classTeacherId], references: [id])
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  students           Student[]
+  subjects           ClassSubject[]
+  feeStructures      FeeStructure[]
+  feeStructureLevels FeeStructureLevel[]
+
+  @@unique([name, academicYearId, tenantId])
+  @@map("classes")
+}
+
+/// A subject offered across grade levels
+model Subject {
+  id           String          @id @default(cuid())
+  name         String
+  code         String
+  description  String?
+  gradeLevel   Int
+  isCompulsory Boolean         @default(true)
+  credits      Int             @default(1)
+  category     SubjectCategory @default(CORE)
+  department   String?
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  classes ClassSubject[]
+
+  @@unique([code, tenantId])
+  @@map("subjects")
+}
+
+/// Junction: Class ↔ Subject (with optional assigned teacher)
+model ClassSubject {
+  id             String  @id @default(cuid())
+  classId        String
+  subjectId      String
+  teacherId      String?
+  periodsPerWeek Int?    @default(5)
+
+  class   Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  subject Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher Teacher? @relation(fields: [teacherId], references: [id])
+
+  @@unique([classId, subjectId])
+  @@map("class_subjects")
+}
+
+// ── People ────────────────────────────────────────────────────────────────────
+
+/// Student profile linked to a User
+model Student {
+  id              String        @id @default(cuid())
+  rollNumber      String
+  admissionNumber String
+  admissionDate   DateTime
+  academicStatus  StudentStatus @default(ACTIVE)
+  emergencyContact String?
+  emergencyPhone  String?
+
+  // User link
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Current class
+  classId String
+  class   Class  @relation(fields: [classId], references: [id])
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  studentFees   StudentFee[]
+  ledgerEntries FeeLedger[]
+
+  @@unique([rollNumber, tenantId])
+  @@unique([admissionNumber, tenantId])
+  @@map("students")
+}
+
+/// Teacher / staff profile linked to a User
+model Teacher {
+  id               String           @id @default(cuid())
+  employeeId       String
+  joiningDate      DateTime
+  designation      String
+  department       String?
+  qualification    String?
+  experience       Int?
+  salary           Float?
+  employmentStatus EmploymentStatus @default(ACTIVE)
+
+  // User link
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  classesAsTeacher Class[]
+  subjectsTaught   ClassSubject[]
+
+  @@unique([employeeId, tenantId])
+  @@map("teachers")
+}
+
+// ── Fee Structures ────────────────────────────────────────────────────────────
+
+/// Top-level fee definition (may target school, grade, or a single class)
+model FeeStructure {
+  id          String            @id @default(cuid())
+  name        String
+  description String?
+  feeType     FeeType           @default(TERM_WISE)
+  isRecurring Boolean           @default(true)
+  isOptional  Boolean           @default(false)
+  isLocked    Boolean           @default(false)
+  lockedAt    DateTime?
+  lockedReason String?
+  scope       FeeStructureScope @default(CLASS_SPECIFIC)
+  isAutoBill  Boolean           @default(false) // Auto-bill on term activation
+
+  // Academic scope
+  academicYearId String
+  academicYear   AcademicYear  @relation(fields: [academicYearId], references: [id])
+  academicTermId String?
+  academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id])
+
+  // Targeting (class or grade)
+  classId    String?
+  class      Class?  @relation(fields: [classId], references: [id])
+  gradeLevel Int?
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  feeComponents FeeComponent[]
+  studentFees   StudentFee[]
+  levels        FeeStructureLevel[]
+
+  @@index([tenantId, academicYearId, academicTermId])
+  @@index([tenantId, classId, gradeLevel])
+  @@index([tenantId, scope, isAutoBill])
+  @@map("fee_structures")
+}
+
+/// A single line-item component within a fee structure (e.g. Tuition, Transport)
+model FeeComponent {
+  id           String      @id @default(cuid())
+  name         String
+  description  String?
+  amount       Float
+  currency     String      @default("KES")
+  isCompulsory Boolean     @default(true)
+  category     FeeCategory @default(ACADEMIC)
+  dueDate      DateTime?
+  lateFee      Float?      @default(0)
+  sortOrder    Int         @default(0) // FIFO ordering
+
+  // Parent structure
+  feeStructureId String
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  studentFeeComponents StudentFeeComponent[]
+
+  @@map("fee_components")
+}
+
+/// Per-class / per-grade level breakdown within a SCHOOL_WIDE fee structure
+model FeeStructureLevel {
+  id             String  @id @default(cuid())
+  levelLabel     String  // e.g. "PP1", "Grade 1", "JSS 1"
+  totalAmount    Float   @default(0)
+
+  // Parent structure
+  feeStructureId String
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+
+  // Targeting
+  classId    String?
+  class      Class?  @relation(fields: [classId], references: [id])
+  gradeLevel Int?
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  components FeeLevelComponent[]
+
+  @@unique([feeStructureId, classId])
+  @@index([feeStructureId, gradeLevel])
+  @@index([tenantId])
+  @@map("fee_structure_levels")
+}
+
+/// Components belonging to a specific structure level
+model FeeLevelComponent {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  amount      Float
+  currency    String      @default("KES")
+  isCompulsory Boolean    @default(true)
+  category    FeeCategory @default(ACADEMIC)
+  dueDate     DateTime?
+  lateFee     Float?      @default(0)
+  sortOrder   Int         @default(0)
+
+  // Parent level
+  feeStructureLevelId String
+  level               FeeStructureLevel @relation(fields: [feeStructureLevelId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([feeStructureLevelId, sortOrder])
+  @@map("fee_level_components")
+}
+
+// ── Fee Ledger ────────────────────────────────────────────────────────────────
+
+/// 🔐 TRANSACTION MASTER — Unified ledger for ALL fee movements
+model FeeLedger {
+  id           String          @id @default(cuid())
+  entryType    LedgerEntryType
+  amount       Float
+  balanceAfter Float           // Running balance for this student after this entry
+  description  String
+  reference    String?         // Receipt no / structure name
+  metadata     Json?
+  recordedById String?
+  occurredAt   DateTime        @default(now())
+
+  // Student
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  // Optional links to related records
+  studentFeeId String?
+  studentFee   StudentFee? @relation(fields: [studentFeeId], references: [id], onDelete: SetNull)
+  feePaymentId String?
+  feePayment   FeePayment? @relation(fields: [feePaymentId], references: [id], onDelete: SetNull)
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, studentId, occurredAt])
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, entryType])
+  @@map("fee_ledger")
+}
+
+// ── Student Fees ──────────────────────────────────────────────────────────────
+
+/// Tracks a student's obligation against a fee structure
+model StudentFee {
+  id            String    @id @default(cuid())
+  totalAmount   Float
+  paidAmount    Float     @default(0)
+  pendingAmount Float
+  dueDate       DateTime?
+  status        FeeStatus @default(PENDING)
+
+  // Student
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  // Fee structure
+  feeStructureId String
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id])
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  components    StudentFeeComponent[]
+  payments      FeePayment[]
+  ledgerEntries FeeLedger[]
+
+  @@unique([studentId, feeStructureId])
+  @@index([tenantId, status])
+  @@index([tenantId, studentId])
+  @@map("student_fees")
+}
+
+/// Snapshot of each fee component owed by the student
+model StudentFeeComponent {
+  id                  String    @id @default(cuid())
+  name                String    // Snapshot name at billing time
+  amount              Float
+  paidAmount          Float     @default(0)
+  sortOrder           Int       @default(0)
+  status              FeeStatus @default(PENDING)
+  dueDate             DateTime?
+  feeLevelComponentId String?
+
+  // Parent student fee
+  studentFeeId String
+  studentFee   StudentFee @relation(fields: [studentFeeId], references: [id], onDelete: Cascade)
+
+  // Optional link to original component template
+  feeComponentId String?
+  feeComponent   FeeComponent? @relation(fields: [feeComponentId], references: [id]) // ✅ FIX: must be optional
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  allocations FeePaymentAllocation[]
+
+  @@unique([studentFeeId, feeComponentId])
+  @@index([studentFeeId, sortOrder])
+  @@map("student_fee_components")
+}
+
+/// A payment made against a student fee
+model FeePayment {
+  id              String        @id @default(cuid())
+  receiptNumber   String        // Unique per tenant
+  amount          Float
+  allocatedAmount Float         @default(0)
+  paymentMethod   PaymentMethod @default(CASH)
+  transactionId   String?       // External ref (e.g. M-Pesa code)
+  referenceNumber String?       // Bank slip / cheque no
+  status          PaymentStatus @default(COMPLETED)
+  paidAt          DateTime      @default(now())
+  voidedAt        DateTime?
+  voidReason      String?
+  notes           String?
+  recordedById    String?
+
+  // Parent student fee
+  studentFeeId String
+  studentFee   StudentFee @relation(fields: [studentFeeId], references: [id])
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  allocations   FeePaymentAllocation[]
+  ledgerEntries FeeLedger[]
+
+  @@unique([receiptNumber, tenantId])
+  @@index([tenantId, paidAt])
+  @@index([tenantId, paymentMethod])
+  @@map("fee_payments")
+}
+
+/// Allocates a portion of a payment to a specific fee component
+model FeePaymentAllocation {
+  id     String @id @default(cuid())
+  amount Float
+
+  // Payment
+  feePaymentId String
+  feePayment   FeePayment @relation(fields: [feePaymentId], references: [id], onDelete: Cascade)
+
+  // Component being paid
+  studentFeeComponentId String
+  studentFeeComponent   StudentFeeComponent @relation(fields: [studentFeeComponentId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  @@index([feePaymentId])
+  @@index([studentFeeComponentId])
+  @@map("fee_payment_allocations")
+}
+
+// ── Examinations ──────────────────────────────────────────────────────────────
+
+model Examination {
+  id           String   @id @default(cuid())
+  name         String
+  type         ExamType @default(TERM_EXAM)
+  startDate    DateTime
+  endDate      DateTime
+  duration     Int?
+  maxMarks     Int      @default(100)
+  passingMarks Int      @default(40)
+
+  // Term
+  academicTermId String
+  academicTerm   AcademicTerm @relation(fields: [academicTermId], references: [id])
+
+  // Tenant
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("examinations")
+}
+
+// ── Audit & Activity Logs ─────────────────────────────────────────────────────
+
+/// Raw audit trail of DB mutations
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  tableName String
+  recordId  String
+  oldValues Json?
+  newValues Json?
+  userId    String
+  tenantId  String
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+/// High-level activity feed (user-visible events)
+model ActivityLog {
+  id         String             @id @default(cuid())
+  action     ActivityAction
+  entityType ActivityEntityType
+  entityId   String
+  message    String
+  metadata   Json?
+
+  // Optional links
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([entityType, createdAt])
+  @@map("activity_logs")
+}
+
+// ── Tenant Settings ───────────────────────────────────────────────────────────
+
+/// Per-tenant configuration: localisation, branding, fees, security, etc.
 model TenantSettings {
-  id                       String           @id @default(cuid())
-  tenantId                 String           @unique
-  tenant                   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id       String @id @default(cuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  // ─── Localization ───
-  currency                 String           @default("KES")     // ISO 4217 code
-  currencySymbol           String           @default("KSh")
-  currencyPosition         CurrencyPosition @default(BEFORE)
-  currencyDecimals         Int              @default(2)
-  timezone                 String           @default("Africa/Nairobi")
-  locale                   String           @default("en-KE")
-  dateFormat               String           @default("DD/MM/YYYY")
-  timeFormat               TimeFormat       @default(H24)
-  firstDayOfWeek           Int              @default(1)          // 0=Sun, 1=Mon
+  // ─── Localisation ───────────────────────────────────────────────────────────
+  currency         String           @default("KES")          // ISO 4217 code
+  currencySymbol   String           @default("KSh")
+  currencyPosition CurrencyPosition @default(BEFORE)
+  currencyDecimals Int              @default(2)
+  timezone         String           @default("Africa/Nairobi")
+  locale           String           @default("en-KE")
+  dateFormat       String           @default("DD/MM/YYYY")
+  timeFormat       TimeFormat       @default(H24)
+  firstDayOfWeek   Int              @default(1)              // 0=Sun, 1=Mon
 
-  // ─── Branding ───
-  logoUrl                  String?
-  faviconUrl               String?
-  primaryColor             String           @default("#3b82f6")
-  secondaryColor           String           @default("#8b5cf6")
-  brandTagline             String?
+  // ─── Branding ───────────────────────────────────────────────────────────────
+  logoUrl        String?
+  faviconUrl     String?
+  primaryColor   String  @default("#3b82f6")
+  secondaryColor String  @default("#8b5cf6")
+  brandTagline   String?
 
-  // ─── Academic ───
-  defaultGradingScale      String           @default("PERCENTAGE")
-  passingGrade             Float            @default(50)
-  attendanceThreshold      Float            @default(75)
+  // ─── Academic ───────────────────────────────────────────────────────────────
+  defaultGradingScale  String @default("PERCENTAGE")
+  passingGrade         Float  @default(50)
+  attendanceThreshold  Float  @default(75)
 
-  // ─── Fee Settings ───
-  receiptPrefix            String           @default("RCP")
-  invoicePrefix            String           @default("INV")
-  enableLateFees           Boolean          @default(false)
-  lateFeePercentage        Float            @default(0)
-  lateFeeGraceDays         Int              @default(0)
-  enabledPaymentMethods    Json             @default("[\"CASH\",\"MOBILE_MONEY\",\"BANK_TRANSFER\",\"CHEQUE\"]")
-  allowPartialPayments     Boolean          @default(true)
-  allowOverpayment         Boolean          @default(false)
-  requirePaymentReference  Boolean          @default(false)
+  // ─── Fee Settings ───────────────────────────────────────────────────────────
+  receiptPrefix           String  @default("RCP")
+  invoicePrefix           String  @default("INV")
+  enableLateFees          Boolean @default(false)
+  lateFeePercentage       Float   @default(0)
+  lateFeeGraceDays        Int     @default(0)
+  enabledPaymentMethods   Json    @default("[\"CASH\",\"MOBILE_MONEY\",\"BANK_TRANSFER\",\"CHEQUE\"]")
+  allowPartialPayments    Boolean @default(true)
+  allowOverpayment        Boolean @default(false)
+  requirePaymentReference Boolean @default(false)
 
-  // ─── Notifications ───
-  enableEmailNotifications Boolean          @default(true)
-  enableSmsNotifications   Boolean          @default(false)
-  enablePushNotifications  Boolean          @default(false)
-  feeReminderDays          Json             @default("[7,3,1]")   // array of ints
+  // ─── Notifications ──────────────────────────────────────────────────────────
+  enableEmailNotifications Boolean @default(true)
+  enableSmsNotifications   Boolean @default(false)
+  enablePushNotifications  Boolean @default(false)
+  feeReminderDays          Json    @default("[7,3,1]")       // Array of ints (days before due)
 
-  // ─── Security ───
-  sessionTimeoutMinutes    Int              @default(60)
-  passwordMinLength        Int              @default(8)
-  passwordRequireUppercase Boolean          @default(true)
-  passwordRequireNumber    Boolean          @default(true)
-  passwordRequireSymbol    Boolean          @default(false)
-  requireTwoFactor         Boolean          @default(false)
-  maxLoginAttempts         Int              @default(5)
-  lockoutDurationMinutes   Int              @default(15)
+  // ─── Security ───────────────────────────────────────────────────────────────
+  sessionTimeoutMinutes    Int     @default(60)
+  passwordMinLength        Int     @default(8)
+  passwordRequireUppercase Boolean @default(true)
+  passwordRequireNumber    Boolean @default(true)
+  passwordRequireSymbol    Boolean @default(false)
+  requireTwoFactor         Boolean @default(false)
+  maxLoginAttempts         Int     @default(5)
+  lockoutDurationMinutes   Int     @default(15)
 
-  // ─── Communications ───
-  emailSenderName          String?
-  emailSenderAddress       String?
-  smsProvider              String?          // AFRICAS_TALKING | TWILIO | etc
-  smsSenderId              String?
+  // ─── Communications ─────────────────────────────────────────────────────────
+  emailSenderName    String?
+  emailSenderAddress String?
+  smsProvider        String? // AFRICAS_TALKING | TWILIO | etc.
+  smsSenderId        String?
 
-  // ─── Feature Flags ───
-  enableParentPortal       Boolean          @default(true)
-  enableStudentPortal      Boolean          @default(true)
-  enableOnlinePayments     Boolean          @default(false)
-  enableBulkImport         Boolean          @default(true)
+  // ─── Feature Flags ──────────────────────────────────────────────────────────
+  enableParentPortal  Boolean @default(true)
+  enableStudentPortal Boolean @default(true)
+  enableOnlinePayments Boolean @default(false)
+  enableBulkImport    Boolean @default(true)
 
-  // ─── Custom ───
-  customFields             Json?
+  // ─── Custom ─────────────────────────────────────────────────────────────────
+  customFields Json?
 
-  createdAt                DateTime         @default(now())
-  updatedAt                DateTime         @updatedAt
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("tenant_settings")
 }
