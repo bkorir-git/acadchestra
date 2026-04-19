@@ -1,5 +1,3 @@
--- @description Adds activity feed infrastructure and hardens academic structure lifecycle.
-
 -- CreateEnum
 CREATE TYPE "public"."AcademicYearStatus" AS ENUM ('DRAFT', 'ACTIVE', 'ARCHIVED', 'LOCKED');
 
