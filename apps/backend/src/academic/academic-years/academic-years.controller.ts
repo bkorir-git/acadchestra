@@ -1,99 +1,116 @@
+/**
+ * @description Academic year endpoints with separate academic/financial lock actions.
+ */
+
 import {
-  Controller,
-  Get,
-  Post,
   Body,
-  Patch,
-  Param,
+  Controller,
   Delete,
-  UseGuards,
+  Get,
+  Param,
+  Patch,
+  Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
-import { AcademicYearsService } from './academic-years.service';
-import { CreateAcademicYearDto } from './dto/create-academic-year.dto';
-import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+import { AcademicYearsService } from './academic-years.service';
+import { CreateAcademicYearDto } from './dto/create-academic-year.dto';
+import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
+import { LockAcademicYearDto } from './dto/lock-academic-year.dto';
 
 @ApiTags('Academic Years')
-@Controller('academic-years')
+@Controller('academic/years')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @ApiBearerAuth()
 export class AcademicYearsController {
-  constructor(private readonly academicYearsService: AcademicYearsService) {}
+  constructor(private readonly service: AcademicYearsService) {}
 
   @Post()
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Create new academic year' })
-  @ApiResponse({ status: 201, description: 'Academic year created successfully' })
-  create(@Body() createAcademicYearDto: CreateAcademicYearDto, @CurrentUser() user: any) {
-    return this.academicYearsService.create(createAcademicYearDto, user.tenantId);
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  @ApiOperation({ summary: 'Create academic year with term validation' })
+  create(@Body() dto: CreateAcademicYearDto, @CurrentUser() user: any) {
+    return this.service.create(dto, user);
   }
 
   @Get()
-  @Roles('Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'Get all academic years' })
-  @ApiResponse({ status: 200, description: 'Academic years retrieved successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
+  @ApiQuery({ name: 'includeTerms', required: false, type: Boolean })
   findAll(
     @CurrentUser() user: any,
     @Query('includeTerms') includeTerms?: string,
   ) {
-    const include = includeTerms !== 'false';
-    return this.academicYearsService.findAll(user.tenantId, include);
+    return this.service.findAll(user, includeTerms !== 'false');
   }
 
   @Get('current')
-  @Roles('Admin', 'Principal', 'Teacher', 'Student', 'Parent')
-  @ApiOperation({ summary: 'Get current academic year' })
-  @ApiResponse({ status: 200, description: 'Current academic year retrieved successfully' })
-  getCurrentYear(@CurrentUser() user: any) {
-    return this.academicYearsService.getCurrentYear(user.tenantId);
-  }
-
-  @Get('active-terms')
-  @Roles('Admin', 'Principal', 'Teacher', 'Student', 'Parent')
-  @ApiOperation({ summary: 'Get active academic terms' })
-  @ApiResponse({ status: 200, description: 'Active terms retrieved successfully' })
-  getActiveTerms(@CurrentUser() user: any) {
-    return this.academicYearsService.getActiveTerms(user.tenantId);
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher', 'Student')
+  current(@CurrentUser() user: any) {
+    return this.service.getCurrentYear(user);
   }
 
   @Get(':id')
-  @Roles('Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'Get academic year by ID' })
-  @ApiResponse({ status: 200, description: 'Academic year retrieved successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
   findOne(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.academicYearsService.findOne(id, user.tenantId);
+    return this.service.findOne(id, user);
   }
 
   @Patch(':id')
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Update academic year' })
-  @ApiResponse({ status: 200, description: 'Academic year updated successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   update(
     @Param('id') id: string,
-    @Body() updateAcademicYearDto: UpdateAcademicYearDto,
+    @Body() dto: UpdateAcademicYearDto,
     @CurrentUser() user: any,
   ) {
-    return this.academicYearsService.update(id, updateAcademicYearDto, user.tenantId);
+    return this.service.update(id, dto, user);
   }
 
   @Patch(':id/set-current')
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Set as current academic year' })
-  @ApiResponse({ status: 200, description: 'Current academic year updated successfully' })
-  setCurrentYear(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.academicYearsService.setCurrentYear(id, user.tenantId);
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  setCurrent(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.setCurrentYear(id, user);
+  }
+
+  @Patch(':id/lock/academic')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  @ApiOperation({ summary: 'Apply ACADEMIC lock (blocks schema edits)' })
+  lockAcademic(
+    @Param('id') id: string,
+    @Body() dto: LockAcademicYearDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.lockAcademic(id, dto, user);
+  }
+
+  @Patch(':id/lock/financial')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  @ApiOperation({ summary: 'Apply FINANCIAL lock (blocks fee edits)' })
+  lockFinancial(
+    @Param('id') id: string,
+    @Body() dto: LockAcademicYearDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.lockFinancial(id, dto, user);
+  }
+
+  @Patch(':id/archive')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  archive(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.archive(id, user);
   }
 
   @Delete(':id')
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Delete academic year' })
-  @ApiResponse({ status: 200, description: 'Academic year deleted successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   remove(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.academicYearsService.remove(id, user.tenantId);
+    return this.service.remove(id, user);
   }
 }
