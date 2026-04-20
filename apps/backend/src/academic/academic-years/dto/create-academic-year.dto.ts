@@ -1,92 +1,104 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { 
-  IsString, 
-  IsDateString, 
-  IsOptional, 
-  IsEnum, 
-  IsInt, 
-  Min, 
-  Max,
-  IsArray,
-  ValidateNested,
-  IsBoolean
-} from 'class-validator';
+/**
+ * @description DTOs for academic year creation with custom or auto-generated terms.
+ */
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
+import {
+  IsArray,
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+  ValidateNested,
+} from 'class-validator';
 import { TermStructure } from '@prisma/client';
 
-class CreateTermDto {
+export class CreateAcademicYearTermDto {
   @ApiProperty({ example: 'Term 1' })
   @IsString()
-  name: string;
+  @MinLength(2)
+  @MaxLength(100)
+  name!: string;
 
-  @ApiProperty({ example: 'T1', required: false })
+  @ApiPropertyOptional({ example: 'T1' })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   shortName?: string;
 
-  @ApiProperty({ example: '2024-09-01' })
+  @ApiProperty({ example: '2026-01-10' })
   @IsDateString()
-  startDate: string;
+  startDate!: string;
 
-  @ApiProperty({ example: '2024-12-15' })
+  @ApiProperty({ example: '2026-04-05' })
   @IsDateString()
-  endDate: string;
+  endDate!: string;
 
-  @ApiProperty({ example: true, default: true })
+  @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()
   hasExams?: boolean;
 
-  @ApiProperty({ example: true, default: true })
+  @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()
   hasFees?: boolean;
 
-  @ApiProperty({ example: 2, default: 2 })
+  @ApiPropertyOptional({ default: 2 })
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(4)
+  @Max(8)
   examWeeks?: number;
 }
 
 export class CreateAcademicYearDto {
-  @ApiProperty({ example: '2024-2025' })
+  @ApiProperty({ example: '2026-2027' })
   @IsString()
-  name: string;
+  @MinLength(4)
+  @MaxLength(30)
+  name!: string;
 
-  @ApiProperty({ example: '2024-09-01' })
+  @ApiProperty({ example: '2026-01-05' })
   @IsDateString()
-  startDate: string;
+  startDate!: string;
 
-  @ApiProperty({ example: '2025-06-30' })
+  @ApiProperty({ example: '2026-12-10' })
   @IsDateString()
-  endDate: string;
+  endDate!: string;
 
-  @ApiProperty({ 
-    enum: TermStructure, 
+  @ApiPropertyOptional({
+    enum: TermStructure,
     default: TermStructure.THREE_TERMS,
-    description: 'Structure of the academic year'
   })
   @IsOptional()
   @IsEnum(TermStructure)
-  termStructure?: TermStructure;
+  termStructure?: TermStructure = TermStructure.THREE_TERMS;
 
-  @ApiProperty({ example: 3, default: 3 })
+  @ApiPropertyOptional({ example: 3, default: 3 })
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(2)
-  @Max(4)
+  @Max(12)
   totalTerms?: number;
 
-  @ApiProperty({ 
-    type: [CreateTermDto], 
-    required: false,
-    description: 'Custom terms (if not provided, default terms will be created)'
-  })
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isCurrent?: boolean;
+
+  @ApiPropertyOptional({ type: [CreateAcademicYearTermDto] })
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => CreateTermDto)
-  terms?: CreateTermDto[];
+  @Type(() => CreateAcademicYearTermDto)
+  terms?: CreateAcademicYearTermDto[];
 }
