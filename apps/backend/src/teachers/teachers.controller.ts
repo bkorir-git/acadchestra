@@ -14,12 +14,12 @@ import {
 import {
   ApiTags,
   ApiOperation,
-  ApiResponse,
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
 import { TeachersService } from './teachers.service';
 import { CreateTeacherDto } from './dto/create-teacher.dto';
+import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -33,22 +33,20 @@ export class TeachersController {
   constructor(private readonly teachersService: TeachersService) {}
 
   @Post()
-  @Roles('Admin', 'Principal')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   @ApiOperation({ summary: 'Create new teacher' })
-  @ApiResponse({ status: 201, description: 'Teacher created successfully' })
   create(@Body() createTeacherDto: CreateTeacherDto, @CurrentUser() user: any) {
     return this.teachersService.create(createTeacherDto, user.tenantId);
   }
 
   @Get()
-  @Roles('Admin', 'Principal', 'Teacher')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
   @ApiOperation({ summary: 'Get all teachers with pagination and filters' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'search', required: false, type: String })
   @ApiQuery({ name: 'department', required: false, type: String })
   @ApiQuery({ name: 'status', required: false, type: String })
-  @ApiResponse({ status: 200, description: 'Teachers retrieved successfully' })
   findAll(
     @CurrentUser() user: any,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
@@ -66,28 +64,41 @@ export class TeachersController {
     });
   }
 
-  @Get(':id')
-  @Roles('Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'Get teacher by ID' })
-  @ApiResponse({ status: 200, description: 'Teacher retrieved successfully' })
-  findOne(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.teachersService.findOne(id, user.tenantId);
-  }
   @Get('stats')
-  @Roles('Admin', 'Principal')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   @ApiOperation({ summary: 'Get teacher statistics' })
-  @ApiResponse({
-    status: 200,
-    description: 'Teacher statistics retrieved successfully',
-  })
   getStats(@CurrentUser() user: any) {
     return this.teachersService.getTeacherStats(user.tenantId);
   }
 
+  @Get(':id')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
+  @ApiOperation({ summary: 'Get teacher by ID' })
+  findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.teachersService.findOne(id, user.tenantId);
+  }
+
+  @Patch(':id')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  @ApiOperation({ summary: 'Update teacher' })
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTeacherDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.teachersService.update(id, dto, user.tenantId);
+  }
+
+  @Patch(':id/toggle-status')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  @ApiOperation({ summary: 'Toggle teacher active status' })
+  toggleStatus(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.teachersService.toggleStatus(id, user.tenantId);
+  }
+
   @Delete(':id')
-  @Roles('Admin', 'Principal')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   @ApiOperation({ summary: 'Delete teacher' })
-  @ApiResponse({ status: 200, description: 'Teacher deleted successfully' })
   remove(@Param('id') id: string, @CurrentUser() user: any) {
     return this.teachersService.remove(id, user.tenantId);
   }
