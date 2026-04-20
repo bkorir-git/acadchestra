@@ -1,39 +1,39 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { 
-  IsEmail, 
-  IsString, 
-  MinLength, 
-  MaxLength, 
-  IsOptional, 
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  MaxLength,
+  IsOptional,
   IsEnum,
   IsDateString,
   IsBoolean,
-  Matches
+  Matches,
 } from 'class-validator';
 import { Gender } from '@prisma/client';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'john.doe@school.edu' })
   @IsEmail()
-  email: string;
+  email!: string;
 
   @ApiProperty({ example: 'SecurePassword123!' })
   @IsString()
   @MinLength(8)
   @MaxLength(100)
-  password: string;
+  password!: string;
 
   @ApiProperty({ example: 'John' })
   @IsString()
   @MinLength(2)
   @MaxLength(50)
-  firstName: string;
+  firstName!: string;
 
   @ApiProperty({ example: 'Doe' })
   @IsString()
   @MinLength(2)
   @MaxLength(50)
-  lastName: string;
+  lastName!: string;
 
   @ApiProperty({ example: 'johndoe', required: false })
   @IsOptional()
@@ -75,11 +75,10 @@ export class CreateUserDto {
   @IsBoolean()
   isActive?: boolean;
 
-  // Updated to accept CUID instead of UUID
   @ApiProperty({ example: 'cmenvqh6z00003g1gi685dg6b', required: true })
   @IsString()
   @Matches(/^c[^\s-]{8,}$/, { message: 'tenantId must be a valid CUID' })
-  tenantId: string;
+  tenantId!: string;
 
   // Role assignment
   @ApiProperty({ example: 'Admin', required: false })

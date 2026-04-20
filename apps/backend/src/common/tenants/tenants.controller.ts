@@ -25,7 +25,7 @@ import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { DeleteTenantDto } from './dto/update-tenant.dto';
-import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
+import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 
 @ApiTags('Tenants')
 @Controller('tenants')
@@ -124,5 +124,11 @@ export class TenantsController {
     @CurrentUser() user: any,
   ) {
     return this.tenantsService.remove(id, deleteDto.adminPassword, user.id);
+  }
+  @Get(':id/export')
+  @Roles('SuperAdmin')
+  @ApiOperation({ summary: 'Export tenant data (SuperAdmin only)' })
+  exportTenantData(@Param('id') id: string) {
+    return this.tenantsService.exportTenantData(id);
   }
 }

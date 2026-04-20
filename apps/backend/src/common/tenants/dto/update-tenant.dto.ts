@@ -1,15 +1,15 @@
-import { PartialType, ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, PartialType } from '@nestjs/swagger';
+import { IsString, MinLength } from 'class-validator';
 import { CreateTenantDto } from './create-tenant.dto';
-import { IsString, MinLength, IsOptional } from 'class-validator';
 
 export class UpdateTenantDto extends PartialType(CreateTenantDto) {}
 
 export class DeleteTenantDto {
-  @ApiProperty({ 
-    example: 'admin_password_123',
-    description: 'Admin password for security confirmation'
+  @ApiProperty({
+    example: 'Admin123!',
+    description: 'SuperAdmin password for confirmation',
   })
   @IsString()
-  @MinLength(8)
-  adminPassword: string;
+  @MinLength(6)
+  adminPassword!: string;
 }

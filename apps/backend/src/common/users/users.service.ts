@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -8,10 +14,31 @@ import * as bcrypt from 'bcrypt';
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(createUserDto: CreateUserDto, tenantId: any, isSuperAdmin: any) {
+  private hasSuperAdminRole(user: any) {
+    return user?.userRoles?.some((ur: any) => ur.role?.name === 'SuperAdmin');
+  }
+
+  async create(
+    createUserDto: CreateUserDto,
+    currentTenantId: string,
+    isSuperAdmin: boolean,
+  ) {
     const { email, password, roleName, ...userData } = createUserDto;
 
-    // Check if user already exists
+    if (!isSuperAdmin && roleName === 'SuperAdmin') {
+      throw new ForbiddenException(
+        'School admin cannot create SuperAdmin users',
+      );
+    }
+
+    const targetTenantId = isSuperAdmin
+      ? createUserDto.tenantId
+      : currentTenantId;
+
+    if (!targetTenantId) {
+      throw new BadRequestException('Target tenant is required');
+    }
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
     });
@@ -20,80 +47,56 @@ export class UsersService {
       throw new ConflictException('User with this email already exists');
     }
 
-    // Hash password
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: targetTenantId },
+    });
+
+    if (!tenant) {
+      throw new NotFoundException('Tenant not found');
+    }
+
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Create user in transaction
-    const result = await this.prisma.$transaction(async (tx) => {
-      // Create the user
+    const created = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
           ...userData,
           email,
           password: hashedPassword,
-        },
-        include: {
-          tenant: true,
+          tenantId: targetTenantId,
         },
       });
 
-      // If roleName provided, assign the role
       if (roleName) {
         const role = await tx.role.findFirst({
-          where: { 
-            name: roleName, 
-            tenantId: userData.tenantId 
+          where: {
+            name: roleName,
+            tenantId: targetTenantId,
           },
         });
 
-        if (role) {
-          await tx.userRole.create({
-            data: {
-              userId: user.id,
-              roleId: role.id,
-            },
-          });
+        if (!role) {
+          throw new NotFoundException(`Role "${roleName}" not found in tenant`);
         }
+
+        await tx.userRole.create({
+          data: {
+            userId: user.id,
+            roleId: role.id,
+          },
+        });
       }
 
-      return tx.user.findUnique({
-        where: { id: user.id },
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          phone: true,
-          isActive: true,
-          createdAt: true,
-          updatedAt: true,
-          tenantId: true,
-          password: true,
-          tenant: true,
-          userRoles: {
-            include: {
-              role: true,
-            },
-          },
-        },
-      });
+      return user.id;
     });
 
-    // TypeScript assertion to ensure result is not null (we know it exists)
-    if (!result) {
-      throw new Error('Failed to create user');
-    }
-
-    const { password: _, ...userWithoutPassword } = result;
-    return userWithoutPassword;
+    return this.findOne(created, isSuperAdmin ? null : currentTenantId);
   }
 
   async findAllGlobal(page = 1, limit = 10, search?: string) {
     const skip = (page - 1) * limit;
 
-    // Build where clause
     const where: any = {};
-    
     if (search) {
       where.OR = [
         { firstName: { contains: search, mode: 'insensitive' } },
@@ -129,8 +132,20 @@ export class UsersService {
       this.prisma.user.count({ where }),
     ]);
 
+    const normalized = users.map((user: any) => {
+      const isPlatform = user.userRoles?.some(
+        (ur: any) => ur.role?.name === 'SuperAdmin',
+      );
+      if (!isPlatform) return user;
+      return {
+        ...user,
+        tenant: null,
+        tenantId: null,
+      };
+    });
+
     return {
-      data: users,
+      data: normalized,
       meta: {
         total,
         page,
@@ -140,12 +155,37 @@ export class UsersService {
     };
   }
 
-  async findAll(tenantId: string, page = 1, limit = 10) {
+  async findAll(tenantId: string, page = 1, limit = 10, search?: string) {
     const skip = (page - 1) * limit;
+
+    const where: any = {
+      tenantId,
+      NOT: {
+        userRoles: {
+          some: {
+            role: {
+              name: 'SuperAdmin',
+            },
+          },
+        },
+      },
+    };
+
+    if (search) {
+      where.AND = [
+        {
+          OR: [
+            { firstName: { contains: search, mode: 'insensitive' } },
+            { lastName: { contains: search, mode: 'insensitive' } },
+            { email: { contains: search, mode: 'insensitive' } },
+          ],
+        },
+      ];
+    }
 
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
-        where: { tenantId },
+        where,
         skip,
         take: limit,
         select: {
@@ -166,7 +206,7 @@ export class UsersService {
         },
         orderBy: { createdAt: 'desc' },
       }),
-      this.prisma.user.count({ where: { tenantId } }),
+      this.prisma.user.count({ where }),
     ]);
 
     return {
@@ -180,7 +220,7 @@ export class UsersService {
     };
   }
 
-  async findOne(id: string, tenantId?: string) {
+  async findOne(id: string, tenantId?: string | null) {
     const whereClause: any = { id };
     if (tenantId) {
       whereClause.tenantId = tenantId;
@@ -217,92 +257,93 @@ export class UsersService {
       },
     });
 
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
+    if (!user) throw new NotFoundException('User not found');
     return user;
   }
 
-  async update(id: string, tenantId: string, updateUserDto: UpdateUserDto) {
-    const user = await this.prisma.user.findFirst({
-      where: { id, tenantId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const updatedUser = await this.prisma.user.update({
-      where: { id },
-      data: updateUserDto,
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-        tenantId: true,
-        userRoles: {
-          include: {
-            role: true,
-          },
-        },
-      },
-    });
-
-    return updatedUser;
-  }
-
-  async toggleUserStatus(id: string, tenantId?: string) {
+  async update(
+    id: string,
+    tenantId: string | null,
+    updateUserDto: UpdateUserDto,
+  ) {
     const whereClause: any = { id };
-    if (tenantId) {
-      whereClause.tenantId = tenantId;
-    }
+    if (tenantId) whereClause.tenantId = tenantId;
 
     const user = await this.prisma.user.findFirst({
       where: whereClause,
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const updatedUser = await this.prisma.user.update({
-      where: { id },
-      data: { isActive: !user.isActive },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        isActive: true,
-        createdAt: true,
-        updatedAt: true,
-        tenantId: true,
-        tenant: true,
+      include: {
         userRoles: {
-          include: {
-            role: true,
-          },
+          include: { role: true },
         },
       },
     });
 
-    return updatedUser;
-  }
+    if (!user) throw new NotFoundException('User not found');
 
-  async remove(id: string, tenantId: string) {
-    const user = await this.prisma.user.findFirst({
-      where: { id, tenantId },
+    if (tenantId && this.hasSuperAdminRole(user)) {
+      throw new ForbiddenException('School admin cannot update SuperAdmin');
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id },
+      data: updateUserDto,
     });
 
-    if (!user) {
-      throw new NotFoundException('User not found');
+    return this.findOne(updated.id, tenantId);
+  }
+
+  async toggleUserStatus(id: string, tenantId?: string | null) {
+    const whereClause: any = { id };
+    if (tenantId) whereClause.tenantId = tenantId;
+
+    const user = await this.prisma.user.findFirst({
+      where: whereClause,
+      include: {
+        userRoles: {
+          include: { role: true },
+        },
+      },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    if (tenantId && this.hasSuperAdminRole(user)) {
+      throw new ForbiddenException('School admin cannot manage SuperAdmin');
+    }
+
+    await this.prisma.user.update({
+      where: { id },
+      data: { isActive: !user.isActive },
+    });
+
+    return this.findOne(id, tenantId);
+  }
+
+  async remove(id: string, tenantId: string | null) {
+    const whereClause: any = { id };
+    if (tenantId) whereClause.tenantId = tenantId;
+
+    const user = await this.prisma.user.findFirst({
+      where: whereClause,
+      include: {
+        userRoles: {
+          include: { role: true },
+        },
+        student: true,
+        teacher: true,
+      },
+    });
+
+    if (!user) throw new NotFoundException('User not found');
+
+    if (tenantId && this.hasSuperAdminRole(user)) {
+      throw new ForbiddenException('School admin cannot delete SuperAdmin');
+    }
+
+    if (user.student || user.teacher) {
+      throw new BadRequestException(
+        'Cannot delete linked student/teacher user directly. Remove the linked profile first.',
+      );
     }
 
     await this.prisma.user.delete({
@@ -312,108 +353,65 @@ export class UsersService {
     return { message: 'User deleted successfully' };
   }
 
-  async assignRole(userId: string, roleId: string, tenantId: string) {
-    // Verify user and role belong to the same tenant
-    const [user, role] = await Promise.all([
-      this.prisma.user.findFirst({
-        where: { id: userId, tenantId },
-      }),
-      this.prisma.role.findFirst({
-        where: { id: roleId, tenantId },
-      }),
-    ]);
+  async updateUserRoles(
+    userId: string,
+    roleIds: string[],
+    tenantId?: string | null,
+  ) {
+    const whereClause: any = { id: userId };
+    if (tenantId) whereClause.tenantId = tenantId;
 
-    if (!user || !role) {
-      throw new NotFoundException('User or role not found');
-    }
-
-    // Check if user already has this role
-    const existingUserRole = await this.prisma.userRole.findUnique({
-      where: {
-        userId_roleId: {
-          userId,
-          roleId,
-        },
-      },
-    });
-
-    if (existingUserRole) {
-      throw new ConflictException('User already has this role');
-    }
-
-    return this.prisma.userRole.create({
-      data: {
-        userId,
-        roleId,
-      },
+    const user = await this.prisma.user.findFirst({
+      where: whereClause,
       include: {
-        role: true,
-      },
-    });
-  }
-
-  async removeRole(userId: string, roleId: string, tenantId: string) {
-    const userRole = await this.prisma.userRole.findUnique({
-      where: {
-        userId_roleId: {
-          userId,
-          roleId,
+        userRoles: {
+          include: { role: true },
         },
       },
-      include: {
-        user: true,
-        role: true,
-      },
     });
 
-    if (!userRole || userRole.user.tenantId !== tenantId) {
-      throw new NotFoundException('User role not found');
+    if (!user) throw new NotFoundException('User not found');
+
+    if (tenantId && this.hasSuperAdminRole(user)) {
+      throw new ForbiddenException(
+        'School admin cannot modify SuperAdmin roles',
+      );
     }
 
-    await this.prisma.userRole.delete({
-      where: {
-        userId_roleId: {
-          userId,
-          roleId,
+    if (tenantId) {
+      const roles = await this.prisma.role.findMany({
+        where: {
+          id: { in: roleIds },
+          tenantId,
         },
-      },
+      });
+
+      if (roles.length !== roleIds.length) {
+        throw new BadRequestException(
+          'One or more roles are invalid for this tenant',
+        );
+      }
+
+      if (roles.some((role) => role.name === 'SuperAdmin')) {
+        throw new ForbiddenException(
+          'School admin cannot assign SuperAdmin role',
+        );
+      }
+    }
+
+    await this.prisma.userRole.deleteMany({
+      where: { userId },
     });
 
-    return { message: 'Role removed successfully' };
+    if (roleIds.length > 0) {
+      await this.prisma.userRole.createMany({
+        data: roleIds.map((roleId) => ({
+          userId,
+          roleId,
+        })),
+      });
+    }
+
+    return this.findOne(userId, tenantId);
   }
-
-  async updateUserRoles(userId: string, roleIds: string[], tenantId?: string) {
-  const whereClause: any = { id: userId }
-  if (tenantId) {
-    whereClause.tenantId = tenantId
-  }
-
-  const user = await this.prisma.user.findFirst({
-    where: whereClause,
-  })
-
-  if (!user) {
-    throw new NotFoundException('User not found')
-  }
-
-  // Remove existing roles
-  await this.prisma.userRole.deleteMany({
-    where: { userId },
-  })
-
-  // Add new roles
-  if (roleIds.length > 0) {
-    const userRoles = roleIds.map(roleId => ({
-      userId,
-      roleId,
-    }))
-
-    await this.prisma.userRole.createMany({
-      data: userRoles,
-    })
-  }
-
-  // Return updated user
-  return this.findOne(userId, tenantId)
-}
 }

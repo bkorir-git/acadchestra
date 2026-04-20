@@ -2,14 +2,16 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
+  Body,
   Query,
   Param,
   UseGuards,
   ParseIntPipe,
   DefaultValuePipe,
-  Patch,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { SystemService } from './system.service';
 import { GlobalUsersService } from './global-users.service';
 import { DatabaseService } from './database.service';
@@ -28,58 +30,83 @@ export class SystemController {
     private readonly databaseService: DatabaseService,
   ) {}
 
-  // System Health & Monitor endpoints
   @Get('health')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get system health status' })
   getHealth() {
     return this.systemService.getSystemHealth();
   }
 
   @Get('metrics')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get system metrics and analytics' })
   getMetrics() {
     return this.systemService.getSystemMetrics();
   }
 
-  // Global Users endpoints
   @Get('users')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get all users across all tenants' })
   getAllUsers(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
     @Query('search') search?: string,
     @Query('role') role?: string,
     @Query('tenantId') tenantId?: string,
-    @Query('isActive') isActive?: boolean,
+    @Query('isActive') isActive?: string,
   ) {
-    return this.globalUsersService.findAll({ page, limit, search, role, tenantId, isActive });
+    return this.globalUsersService.findAll({
+      page,
+      limit,
+      search,
+      role,
+      tenantId,
+      isActive: isActive === undefined ? undefined : isActive === 'true',
+    });
   }
 
   @Get('users/stats')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get global user statistics' })
   getUserStats() {
     return this.globalUsersService.getUserStats();
   }
 
   @Get('users/:id')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get specific user details' })
   getUser(@Param('id') id: string) {
     return this.globalUsersService.findOne(id);
   }
 
+  @Post('users')
+  @Roles('SuperAdmin')
+  createUser(@Body() data: any) {
+    return this.globalUsersService.create(data);
+  }
+
+  @Patch('users/:id')
+  @Roles('SuperAdmin')
+  updateUser(@Param('id') id: string, @Body() data: any) {
+    return this.globalUsersService.update(id, data);
+  }
+
+  @Delete('users/:id')
+  @Roles('SuperAdmin')
+  deleteUser(@Param('id') id: string) {
+    return this.globalUsersService.delete(id);
+  }
+
   @Patch('users/:id/toggle-status')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Toggle user active status' })
   toggleUserStatus(@Param('id') id: string) {
     return this.globalUsersService.toggleUserStatus(id);
   }
 
-  // Database Management endpoints
+  @Post('users/:id/reset-password')
+  @Roles('SuperAdmin')
+  resetPassword(
+    @Param('id') id: string,
+    @Body() body: { newPassword: string },
+  ) {
+    return this.globalUsersService.resetPassword(id, body.newPassword);
+  }
+
   @Get('database/stats')
   @Roles('SuperAdmin')
   @ApiOperation({ summary: 'Get database table statistics' })
@@ -103,7 +130,7 @@ export class SystemController {
 
   @Post('database/backup')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Create database backup' })
+  @ApiOperation({ summary: 'Create a database backup' })
   createBackup() {
     return this.databaseService.createBackup();
   }
@@ -117,7 +144,7 @@ export class SystemController {
 
   @Get('logs')
   @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Get system audit logs' })
+  @ApiOperation({ summary: 'Get system logs' })
   getLogs(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
