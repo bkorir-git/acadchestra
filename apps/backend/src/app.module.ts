@@ -15,6 +15,8 @@ import { RolesModule } from './common/roles/roles.module';
 import { StudentsModule } from './students/students.module';
 import { AcademicModule } from './academic/academic.module';
 import { TeachersModule } from './teachers/teachers.module';
+import { FeesModule } from './fees/fees.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -41,6 +43,8 @@ import { TeachersModule } from './teachers/teachers.module';
     StudentsModule,
     AcademicModule,
     TeachersModule,
+    FeesModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [
