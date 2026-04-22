@@ -1,9 +1,13 @@
 /**
  * @description Dashboard controller serving role-aware stats and recent activity.
  */
-
-import { Controller, Get, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -20,7 +24,16 @@ export class DashboardController {
   @Get('stats')
   @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
   @ApiOperation({ summary: 'Get dashboard statistics' })
-  getStats(@CurrentUser() user: any) {
+  @ApiQuery({
+    name: 'academicYearId',
+    required: false,
+    description:
+      'Reserved for future use. Currently the service resolves the current year internally.',
+  })
+  getStats(
+    @CurrentUser() user: any,
+    @Query('academicYearId') _academicYearId?: string,
+  ) {
     return this.dashboardService.getStats(user);
   }
 
