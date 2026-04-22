@@ -43,6 +43,15 @@ enum AcademicYearStatus {
   LOCKED
 }
 
+enum CalendarPhase {
+  SETUP              // Year created, terms defined, no teaching yet
+  TEACHING           // Normal term in progress, instruction active
+  EXAMS              // Exam window — academic structure locked
+  BREAK              // Holiday / mid-term break — teaching paused
+  PROMOTION_WINDOW   // Year-end promotion window — promotions allowed
+  ARCHIVED           // Year ended and archived
+}
+
 enum AcademicPeriodType {
   TERM
   HOLIDAY
@@ -284,6 +293,34 @@ enum ActivityEntityType {
   STUDENT_DISCOUNT
   PROMOTION
   NOTIFICATION
+    PROMOTION_PLAN
+  PROMOTION_PLAN_ENTRY
+}
+
+enum PromotionPlanStatus {
+  DRAFT       // Generated, not reviewed
+  REVIEWING   // Admin is editing mappings
+  APPROVED    // Validated, ready to execute
+  EXECUTING   // In progress
+  EXECUTED    // Committed
+  CANCELLED
+}
+
+enum PromotionStrategy {
+  PRESERVE_STREAM        // Keep same stream in target grade
+  BALANCED_DISTRIBUTION  // Spread students across streams
+  CUSTOM_MAPPING         // Fully manual — no strategy inference
+  GRADE_ONLY             // Target year has no streams — grade++ only
+}
+
+enum PromotionPlanEntryStatus {
+  PENDING
+  APPROVED
+  CONFLICTED
+  OVERRIDDEN
+  SKIPPED
+  GRADUATED
+  RETAINED
 }
 
 // =============================================================================
@@ -336,6 +373,7 @@ model Tenant {
   promotions             StudentPromotion[]
   notifications          Notification[]
   reportSnapshots        ReportSnapshot[]
+    promotionPlans  PromotionPlan[]
 
   @@map("tenants")
 }
@@ -457,6 +495,11 @@ model AcademicYear {
   financiallyLockedAt DateTime?
   financialLockReason String?
 
+  streamsByGrade Json? @default("{}")
+
+  promotionWindowStart DateTime?
+  promotionWindowEnd   DateTime?
+
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -542,6 +585,85 @@ model AcademicPeriod {
   @@index([tenantId, academicYearId, startDate, endDate])
   @@index([tenantId, type])
   @@map("academic_periods")
+}
+
+model PromotionPlan {
+  id                    String              @id @default(cuid())
+  name                  String
+  status                PromotionPlanStatus @default(DRAFT)
+  strategy              PromotionStrategy   @default(PRESERVE_STREAM)
+
+  fromAcademicYearId    String
+  toAcademicYearId      String
+
+  totalStudents         Int                 @default(0)
+  plannedPromotions     Int                 @default(0)
+  plannedGraduations    Int                 @default(0)
+  plannedRetentions     Int                 @default(0)
+  conflictsCount        Int                 @default(0)
+  warningsCount         Int                 @default(0)
+
+  notes                 String?
+  summary               Json?               // warnings, stats, strategy snapshot
+
+  createdById           String?
+  approvedById          String?
+  approvedAt            DateTime?
+  executedById          String?
+  executedAt            DateTime?
+  cancelledById         String?
+  cancelledAt           DateTime?
+
+  tenantId              String
+  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  entries               PromotionPlanEntry[]
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, toAcademicYearId])
+  @@map("promotion_plans")
+}
+
+model PromotionPlanEntry {
+  id              String                    @id @default(cuid())
+
+  planId          String
+  plan            PromotionPlan             @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  studentId       String
+  fromClassId     String?
+  suggestedClassId String?
+  overrideClassId  String?
+  finalClassId     String?
+
+  fromStream      String?
+  suggestedStream String?
+  overrideStream  String?
+  finalStream     String?
+
+  status          PromotionPlanEntryStatus  @default(PENDING)
+  action          String                    // PROMOTE | RETAIN | GRADUATE | SKIP
+
+  warnings        Json?                     // string[]
+  conflicts       Json?                     // string[]
+  adminNotes      String?
+
+  // Populated after execution
+  executedPromotionId String?
+  executedAt          DateTime?
+
+  tenantId        String
+
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  @@unique([planId, studentId])
+  @@index([planId, status])
+  @@index([tenantId, studentId])
+  @@map("promotion_plan_entries")
 }
 
 model Class {
