@@ -1,6 +1,7 @@
 /**
- * @description Typed payloads for each emitted event.
+ * @description Typed payloads for each emitted event (strict typing at listeners).
  */
+
 export interface TermActivatedPayload {
   tenantId: string;
   termId: string;
@@ -98,6 +99,13 @@ export interface StudentPromotedPayload {
   fromClassId: string | null;
   toClassId: string | null;
   academicYearId: string;
+  actorId: string;
+}
+
+export interface StudentEnrolledPayload {
+  tenantId: string;
+  studentId: string;
+  classId: string;
   actorId: string;
 }
 
