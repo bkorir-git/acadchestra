@@ -27,6 +27,8 @@ import { AcademicYearsService } from './academic-years.service';
 import { CreateAcademicYearDto } from './dto/create-academic-year.dto';
 import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
 import { LockAcademicYearDto } from './dto/lock-academic-year.dto';
+import { CloneAcademicYearDto } from './dto/clone-academic-year.dto';
+import { SetStreamsConfigDto } from './dto/streams-config.dto';
 
 @ApiTags('Academic Years')
 @Controller('academic/years')
@@ -37,7 +39,6 @@ export class AcademicYearsController {
 
   @Post()
   @Roles('SuperAdmin', 'Admin', 'Principal')
-  @ApiOperation({ summary: 'Create academic year with term validation' })
   create(@Body() dto: CreateAcademicYearDto, @CurrentUser() user: any) {
     return this.service.create(dto, user);
   }
@@ -52,10 +53,16 @@ export class AcademicYearsController {
     return this.service.findAll(user, includeTerms !== 'false');
   }
 
+  /**
+   * GET /academic-years/current
+   * Returns { data: year | null, message? } so the frontend can distinguish
+   * "no current year set" (fresh school) from a real error. Never throws 404.
+   */
   @Get('current')
   @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher', 'Student')
-  current(@CurrentUser() user: any) {
-    return this.service.getCurrentYear(user);
+  @ApiOperation({ summary: 'Get current academic year for tenant' })
+  getCurrentYear(@CurrentUser() user: any) {
+    return this.service.getCurrentYearWrapped(user.tenantId);
   }
 
   @Get(':id')
@@ -82,7 +89,6 @@ export class AcademicYearsController {
 
   @Patch(':id/lock/academic')
   @Roles('SuperAdmin', 'Admin', 'Principal')
-  @ApiOperation({ summary: 'Apply ACADEMIC lock (blocks schema edits)' })
   lockAcademic(
     @Param('id') id: string,
     @Body() dto: LockAcademicYearDto,
@@ -93,7 +99,6 @@ export class AcademicYearsController {
 
   @Patch(':id/lock/financial')
   @Roles('SuperAdmin', 'Admin', 'Principal')
-  @ApiOperation({ summary: 'Apply FINANCIAL lock (blocks fee edits)' })
   lockFinancial(
     @Param('id') id: string,
     @Body() dto: LockAcademicYearDto,
@@ -112,5 +117,35 @@ export class AcademicYearsController {
   @Roles('SuperAdmin', 'Admin', 'Principal')
   remove(@Param('id') id: string, @CurrentUser() user: any) {
     return this.service.remove(id, user);
+  }
+
+  @Get(':id/streams-config')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
+  getStreamsConfig(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.getStreamsConfig(id, user);
+  }
+
+  @Patch(':id/streams-config')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  setStreamsConfig(
+    @Param('id') id: string,
+    @Body() dto: SetStreamsConfigDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.setStreamsConfig(id, dto, user);
+  }
+
+  @Post(':id/clone')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  @ApiOperation({
+    summary:
+      'Clone a year — copies structure and (optionally) classes without students',
+  })
+  cloneYear(
+    @Param('id') id: string,
+    @Body() dto: CloneAcademicYearDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.cloneYear(id, dto, user);
   }
 }
