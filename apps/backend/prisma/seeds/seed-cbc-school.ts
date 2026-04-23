@@ -1,338 +1,492 @@
-import { PrismaClient } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-
 /**
- * CBC School Seed File - Greenfield Academy
- * Kenya Competency Based Curriculum (CBC)
- * Grades: PP1, PP2, Grade 1–6
- * Structure: Each grade has 2 streams (A & B), 20 students per stream = 40 per grade
- * Run: ts-node prisma/seeds/seed-cbc-school.ts
+ * ═══════════════════════════════════════════════════════════════════════
+ *  Greenfield CBC Primary School — Comprehensive Test Seed
+ *  Run: ts-node prisma/seeds/seed-cbc-school.ts
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ *  What this creates
+ *  ─────────────────
+ *  • Tenant   : Greenfield CBC Primary School (greenfield.acadchestra.com)
+ *  • Roles    : Admin, Principal, Teacher, Student, Parent, SuperAdmin
+ *  • Users    : 1 admin + 1 principal + 12 class teachers + 240 students
+ *  • Academic : Year 2026 · Term 1 (locked/completed) · Term 2 (active) · Term 3
+ *  • Periods  : Terms, holidays, mid-term breaks, exam weeks
+ *  • Classes  : Grade 1–6 × East & West = 12 classes (20 students each)
+ *  • Subjects : Full CBC-aligned curriculum per grade (Lower & Upper Primary)
+ *  • Attendance: 10 school days × 12 classes = 120 sessions, 2 400 records (Term 1)
+ *  • Exams    : End-of-Term 1 examinations per grade
+ *
+ *  Password for EVERY user: Admin123!
+ * ═══════════════════════════════════════════════════════════════════════
  */
+
+import {
+  PrismaClient,
+  Gender,
+  AcademicYearStatus,
+  ClassType,
+  SubjectCategory,
+  StudentStatus,
+  EmploymentStatus,
+  AttendanceStatus,
+  AttendanceSessionStatus,
+  AttendanceSessionType,
+  ExamType,
+  AcademicPeriodType,
+} from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// ① MASTER DATA
+// ═══════════════════════════════════════════════════════════════════════
 
-function randomDOB(minAge: number, maxAge: number): Date {
-  const now = new Date();
-  const year =
-    now.getFullYear() -
-    Math.floor(Math.random() * (maxAge - minAge + 1) + minAge);
-  const month = Math.floor(Math.random() * 12);
-  const day = Math.floor(Math.random() * 28) + 1;
-  return new Date(year, month, day);
-}
-
-function pad(n: number, width = 3): string {
-  return String(n).padStart(width, '0');
-}
-
-// Real Kenyan names pool
+/** 20 male first names — one per male student slot in each class */
 const MALE_FIRST = [
-  'Amani', 'Brian', 'Calvin', 'Daniel', 'Edwin', 'Felix', 'George', 'Hassan',
-  'Ian', 'James', 'Kevin', 'Levi', 'Martin', 'Nathan', 'Oliver', 'Patrick',
-  'Quincy', 'Robert', 'Samuel', 'Timothy', 'Umar', 'Victor', 'Walter',
-  'Xavier', 'Yusuf', 'Zawadi', 'Alex', 'Benson', 'Collins', 'Dennis',
+  'Amani',   'Baraka',  'Chidi',   'Daudi',   'Elias',
+  'Fadhili', 'Gabriel', 'Hassan',  'Ibrahim', 'Jabari',
+  'Kamau',   'Lewis',   'Mwenda',  'Nathan',  'Obinna',
+  'Patrick', 'Reuben',  'Samuel',  'Titus',   'Yusuf',
 ];
+
+/** 20 female first names — one per female student slot in each class */
 const FEMALE_FIRST = [
-  'Aisha', 'Beatrice', 'Caroline', 'Diana', 'Esther', 'Faith', 'Grace',
-  'Hannah', 'Irene', 'Joy', 'Karen', 'Lydia', 'Mary', 'Naomi', 'Olivia',
-  'Priscilla', 'Queen', 'Ruth', 'Sharon', 'Tabitha', 'Umi', 'Violet',
-  'Wendy', 'Xenia', 'Yasmin', 'Zipporah', 'Agnes', 'Betty', 'Cynthia', 'Doris',
+  'Aisha',    'Beatrice', 'Carol',   'Diana',   'Esther',
+  'Fatuma',   'Grace',    'Hannah',  'Irene',   'Jane',
+  'Kezia',    'Lilian',   'Mary',    'Nancy',   'Olive',
+  'Patricia', 'Rose',     'Sarah',   'Tabitha', 'Winnie',
 ];
+
+/** 40 last names — rotated across classes to minimise repeats */
 const LAST_NAMES = [
-  'Kamau', 'Omondi', 'Wanjiru', 'Kipchoge', 'Mwangi', 'Otieno', 'Njoroge',
-  'Mutua', 'Achieng', 'Kariuki', 'Njenga', 'Owino', 'Kimani', 'Auma',
-  'Gitau', 'Onyango', 'Waweru', 'Adhiambo', 'Kenyatta', 'Odinga', 'Mureithi',
-  'Simiyu', 'Wekesa', 'Chebet', 'Ruto', 'Korir', 'Langat', 'Bett', 'Sang', 'Too',
+  'Kamau',    'Wanjiku',   'Ochieng',  'Mutua',     'Kipchoge',
+  'Otieno',   'Mwangi',    'Njoroge',  'Waweru',    'Karimi',
+  'Omondi',   'Akinyi',    'Mbeki',    'Koech',     'Rotich',
+  'Chebet',   'Njogu',     'Macharia', 'Gitau',     'Kimani',
+  'Okello',   'Adhiambo',  'Nyambura', 'Gicheru',   'Maina',
+  'Wairimu',  'Kipkoech',  'Chepkorir','Musyoka',   'Kilonzo',
+  'Muema',    'Nzau',      'Ogola',    'Onyango',   'Achieng',
+  'Were',     'Simiyu',    'Wekesa',   'Barasa',    'Masinde',
 ];
 
-let maleIdx = 0;
-let femaleIdx = 0;
-let lastIdx = 0;
+/** One class teacher per class, matched by classKey */
+const TEACHER_PROFILES = [
+  { firstName: 'Jane',   lastName: 'Wanjiku',  gender: Gender.FEMALE, classKey: 'G1E', designation: 'Class Teacher',  dept: 'Lower Primary' },
+  { firstName: 'David',  lastName: 'Kamau',    gender: Gender.MALE,   classKey: 'G1W', designation: 'Class Teacher',  dept: 'Lower Primary' },
+  { firstName: 'Mary',   lastName: 'Otieno',   gender: Gender.FEMALE, classKey: 'G2E', designation: 'Class Teacher',  dept: 'Lower Primary' },
+  { firstName: 'James',  lastName: 'Mwangi',   gender: Gender.MALE,   classKey: 'G2W', designation: 'Class Teacher',  dept: 'Lower Primary' },
+  { firstName: 'Grace',  lastName: 'Njoroge',  gender: Gender.FEMALE, classKey: 'G3E', designation: 'Class Teacher',  dept: 'Lower Primary' },
+  { firstName: 'Peter',  lastName: 'Ochieng',  gender: Gender.MALE,   classKey: 'G3W', designation: 'Class Teacher',  dept: 'Lower Primary' },
+  { firstName: 'Faith',  lastName: 'Mutua',    gender: Gender.FEMALE, classKey: 'G4E', designation: 'Class Teacher',  dept: 'Upper Primary' },
+  { firstName: 'John',   lastName: 'Kipchoge', gender: Gender.MALE,   classKey: 'G4W', designation: 'Class Teacher',  dept: 'Upper Primary' },
+  { firstName: 'Rose',   lastName: 'Akinyi',   gender: Gender.FEMALE, classKey: 'G5E', designation: 'Class Teacher',  dept: 'Upper Primary' },
+  { firstName: 'Paul',   lastName: 'Rotich',   gender: Gender.MALE,   classKey: 'G5W', designation: 'Class Teacher',  dept: 'Upper Primary' },
+  { firstName: 'Sarah',  lastName: 'Karimi',   gender: Gender.FEMALE, classKey: 'G6E', designation: 'Senior Teacher', dept: 'Upper Primary' },
+  { firstName: 'Samuel', lastName: 'Omondi',   gender: Gender.MALE,   classKey: 'G6W', designation: 'Senior Teacher', dept: 'Upper Primary' },
+] as const;
 
-function nextName(gender: 'MALE' | 'FEMALE'): { first: string; last: string } {
-  const first =
-    gender === 'MALE'
-      ? MALE_FIRST[maleIdx++ % MALE_FIRST.length]
-      : FEMALE_FIRST[femaleIdx++ % FEMALE_FIRST.length];
-  const last = LAST_NAMES[lastIdx++ % LAST_NAMES.length];
-  return { first, last };
+/** 12 classes — Grade 1–6 × East & West */
+const CLASS_CONFIGS = [
+  { grade: 1, stream: 'East', key: 'G1E' },
+  { grade: 1, stream: 'West', key: 'G1W' },
+  { grade: 2, stream: 'East', key: 'G2E' },
+  { grade: 2, stream: 'West', key: 'G2W' },
+  { grade: 3, stream: 'East', key: 'G3E' },
+  { grade: 3, stream: 'West', key: 'G3W' },
+  { grade: 4, stream: 'East', key: 'G4E' },
+  { grade: 4, stream: 'West', key: 'G4W' },
+  { grade: 5, stream: 'East', key: 'G5E' },
+  { grade: 5, stream: 'West', key: 'G5W' },
+  { grade: 6, stream: 'East', key: 'G6E' },
+  { grade: 6, stream: 'West', key: 'G6W' },
+] as const;
+
+type SubjectDef = {
+  name: string;
+  code: string;
+  category: SubjectCategory;
+  isCompulsory: boolean;
+  periodsPerWeek: number;
+};
+
+/** CBC Lower Primary subjects (Grades 1–3) */
+function lpSubjects(grade: number): SubjectDef[] {
+  const g = `G${grade}`;
+  return [
+    { name: 'Literacy Activities',             code: `${g}-LIT`, category: SubjectCategory.LANGUAGE,   isCompulsory: true, periodsPerWeek: 10 },
+    { name: 'Kiswahili Language Activities',    code: `${g}-KSW`, category: SubjectCategory.LANGUAGE,   isCompulsory: true, periodsPerWeek: 7  },
+    { name: 'Mathematical Activities',          code: `${g}-MAT`, category: SubjectCategory.CORE,       isCompulsory: true, periodsPerWeek: 7  },
+    { name: 'Environmental Activities',         code: `${g}-ENV`, category: SubjectCategory.SCIENCE,    isCompulsory: true, periodsPerWeek: 5  },
+    { name: 'Creative Arts Activities',         code: `${g}-ART`, category: SubjectCategory.ARTS,       isCompulsory: true, periodsPerWeek: 5  },
+    { name: 'Religious Education Activities',   code: `${g}-RE`,  category: SubjectCategory.CORE,       isCompulsory: true, periodsPerWeek: 3  },
+    { name: 'Physical & Health Education',      code: `${g}-PHE`, category: SubjectCategory.SPORTS,     isCompulsory: true, periodsPerWeek: 3  },
+  ];
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+/** CBC Upper Primary subjects (Grades 4–6) */
+function upSubjects(grade: number): SubjectDef[] {
+  const g = `G${grade}`;
+  const base: SubjectDef[] = [
+    { name: 'English Language',        code: `${g}-ENG`,  category: SubjectCategory.LANGUAGE,   isCompulsory: true, periodsPerWeek: 7  },
+    { name: 'Kiswahili Language',      code: `${g}-KSW`,  category: SubjectCategory.LANGUAGE,   isCompulsory: true, periodsPerWeek: 5  },
+    { name: 'Mathematics',             code: `${g}-MAT`,  category: SubjectCategory.CORE,       isCompulsory: true, periodsPerWeek: 7  },
+    { name: 'Integrated Science',      code: `${g}-SCI`,  category: SubjectCategory.SCIENCE,    isCompulsory: true, periodsPerWeek: 5  },
+    { name: 'Social Studies',          code: `${g}-SS`,   category: SubjectCategory.CORE,       isCompulsory: true, periodsPerWeek: 4  },
+    { name: 'Religious Education',     code: `${g}-RE`,   category: SubjectCategory.CORE,       isCompulsory: true, periodsPerWeek: 3  },
+    { name: 'Creative Arts & Sports',  code: `${g}-CAS`,  category: SubjectCategory.ARTS,       isCompulsory: true, periodsPerWeek: 4  },
+    { name: 'Agriculture & Nutrition', code: `${g}-AGRI`, category: SubjectCategory.VOCATIONAL, isCompulsory: true, periodsPerWeek: 4  },
+    { name: 'Life Skills Education',   code: `${g}-LSE`,  category: SubjectCategory.CORE,       isCompulsory: true, periodsPerWeek: 2  },
+  ];
+  if (grade >= 5) {
+    base.push({ name: 'Pre-Technical Studies', code: `${g}-PTS`, category: SubjectCategory.VOCATIONAL, isCompulsory: true, periodsPerWeek: 4 });
+  }
+  return base;
+}
 
-async function main() {
-  console.log('🌱 Seeding Greenfield Academy (CBC)...\n');
+// ═══════════════════════════════════════════════════════════════════════
+// ② HELPERS
+// ═══════════════════════════════════════════════════════════════════════
 
-  const hashedPassword = await bcrypt.hash('School123!', 12);
+const pad = (n: number, w = 3): string => String(n).padStart(w, '0');
 
-  // ── 1. Tenant ────────────────────────────────────────────────────────────
+/**
+ * Deterministic but varied attendance — ≈90% PRESENT, 5% ABSENT,
+ * 3% LATE, 2% EXCUSED — spread naturally across students & days.
+ */
+function attendanceFor(
+  classIdx: number,
+  studentIdx: number,
+  dayIdx: number,
+): AttendanceStatus {
+  const r = ((classIdx + 1) * 7 + (studentIdx + 1) * 13 + (dayIdx + 1) * 17) % 100;
+  if (r < 90) return AttendanceStatus.PRESENT;
+  if (r < 95) return AttendanceStatus.ABSENT;
+  if (r < 98) return AttendanceStatus.LATE;
+  return AttendanceStatus.EXCUSED;
+}
+
+/**
+ * Term 1 2026 attendance dates:
+ *   Week 1 (Jan 5–9) and Week 2 (Jan 12–16)
+ * Jan 5 is a Monday in 2026.
+ */
+const TERM1_ATTENDANCE_DATES: Date[] = [
+  // Week 1 — school opens
+  new Date('2026-01-05'), new Date('2026-01-06'), new Date('2026-01-07'),
+  new Date('2026-01-08'), new Date('2026-01-09'),
+  // Week 2
+  new Date('2026-01-12'), new Date('2026-01-13'), new Date('2026-01-14'),
+  new Date('2026-01-15'), new Date('2026-01-16'),
+];
+
+// ═══════════════════════════════════════════════════════════════════════
+// ③ MAIN SEED
+// ═══════════════════════════════════════════════════════════════════════
+
+async function main(): Promise<void> {
+  console.log('\n🌱  Seeding Greenfield CBC Primary School…\n');
+
+  const hashedPassword = await bcrypt.hash('Admin123!', 12);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // A. TENANT
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [1/14] Tenant & settings…');
+
   const tenant = await prisma.tenant.upsert({
     where: { domain: 'greenfield.acadchestra.com' },
     update: {},
     create: {
-      name: 'Greenfield Academy',
+      name: 'Greenfield CBC Primary School',
       domain: 'greenfield.acadchestra.com',
       subdomain: 'greenfield',
-      email: 'info@greenfieldacademy.ac.ke',
+      email: 'admin@greenfield.acadchestra.com',
       phone: '+254712345678',
-      address: 'Westlands, Nairobi, Kenya',
+      address: 'Greenfield Estate, Nairobi, Kenya',
       planType: 'PROFESSIONAL',
       maxStudents: 500,
       termStructure: 'THREE_TERMS',
+      gradeStructure: {
+        grades: [1, 2, 3, 4, 5, 6],
+        streams: ['East', 'West'],
+        type: 'CBC',
+      },
     },
   });
-  console.log('✅ Tenant:', tenant.name);
 
-  // ── 2. Academic Year ─────────────────────────────────────────────────────
-  const academicYear = await prisma.academicYear.upsert({
-    where: { name_tenantId: { name: '2024-2025', tenantId: tenant.id } },
+  await prisma.tenantSettings.upsert({
+    where: { tenantId: tenant.id },
     update: {},
     create: {
-      name: '2024-2025',
-      startDate: new Date('2025-01-06'),
-      endDate: new Date('2025-11-28'),
-      isCurrent: true,
-      termStructure: 'THREE_TERMS',
-      totalTerms: 3,
-      status: 'ACTIVE',
+      tenantId: tenant.id,
+      currency: 'KES',
+      currencySymbol: 'KSh',
+      timezone: 'Africa/Nairobi',
+      locale: 'en-KE',
+      dateFormat: 'DD/MM/YYYY',
+      primaryColor: '#16a34a',
+      secondaryColor: '#166534',
+      brandTagline: 'Nurturing Future Leaders Through CBC',
+      defaultGradingScale: 'PERCENTAGE',
+      passingGrade: 50,
+      attendanceThreshold: 75,
+    },
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // B. ROLES
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [2/14] Roles…');
+
+  const roleMap: Record<string, string> = {};
+  for (const name of ['SuperAdmin', 'Admin', 'Principal', 'Teacher', 'Student', 'Parent']) {
+    const role = await prisma.role.upsert({
+      where: { name_tenantId: { name, tenantId: tenant.id } },
+      update: {},
+      create: { name, tenantId: tenant.id, isSystem: true },
+    });
+    roleMap[name] = role.id;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // C. ADMIN USER
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [3/14] Admin user…');
+
+  const adminUser = await prisma.user.upsert({
+    where: { email: 'admin@greenfield.acadchestra.com' },
+    update: {},
+    create: {
+      email: 'admin@greenfield.acadchestra.com',
+      password: hashedPassword,
+      firstName: 'School',
+      lastName: 'Admin',
+      gender: Gender.MALE,
+      isEmailVerified: true,
+      isActive: true,
       tenantId: tenant.id,
     },
   });
-  console.log('✅ Academic Year:', academicYear.name);
+  await prisma.userRole.upsert({
+    where: { userId_roleId: { userId: adminUser.id, roleId: roleMap['Admin'] } },
+    update: {},
+    create: { userId: adminUser.id, roleId: roleMap['Admin'] },
+  });
 
-  // ── 3. Academic Terms ────────────────────────────────────────────────────
-  const termsData = [
-    { name: 'Term 1 2025', shortName: 'T1', termNumber: 1, startDate: new Date('2025-01-06'), endDate: new Date('2025-04-04'), isActive: false },
-    { name: 'Term 2 2025', shortName: 'T2', termNumber: 2, startDate: new Date('2025-04-29'), endDate: new Date('2025-08-01'), isActive: true },
-    { name: 'Term 3 2025', shortName: 'T3', termNumber: 3, startDate: new Date('2025-09-01'), endDate: new Date('2025-11-28'), isActive: false },
-  ];
+  // ─────────────────────────────────────────────────────────────────────
+  // D. PRINCIPAL
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [4/14] Principal…');
 
-  const terms: any[] = [];
-  for (const t of termsData) {
-    const term = await prisma.academicTerm.upsert({
-      where: { name_academicYearId: { name: t.name, academicYearId: academicYear.id } },
-      update: {},
-      create: { ...t, academicYearId: academicYear.id, tenantId: tenant.id, hasExams: true, hasFees: true, examWeeks: 2 },
-    });
-    terms.push(term);
-  }
-  console.log('✅ Academic Terms: Term 1, Term 2, Term 3');
-
-  // ── 4. Permissions ───────────────────────────────────────────────────────
-  const permissionDefs = [
-    'users', 'students', 'teachers', 'classes', 'subjects',
-    'fees', 'payments', 'examinations', 'reports',
-  ].flatMap((r) =>
-    ['create', 'read', 'update', 'delete'].map((a) => ({ resource: r, action: a, description: `${a} ${r}` })),
-  );
-
-  for (const p of permissionDefs) {
-    await prisma.permission.upsert({
-      where: { resource_action: { resource: p.resource, action: p.action } },
-      update: {},
-      create: p,
-    });
-  }
-  console.log('✅ Permissions created');
-
-  // ── 5. Roles ─────────────────────────────────────────────────────────────
-  const roleDefs = [
-    { name: 'SuperAdmin', description: 'Full system access', isSystem: true },
-    { name: 'Admin', description: 'School administrative access', isSystem: true },
-    { name: 'Principal', description: 'Principal / Head teacher access', isSystem: true },
-    { name: 'Teacher', description: 'Class teacher access', isSystem: true },
-    { name: 'Student', description: 'Student access', isSystem: true },
-    { name: 'Parent', description: 'Parent / Guardian access', isSystem: true },
-  ];
-
-  const rolesMap: Record<string, any> = {};
-  for (const r of roleDefs) {
-    const role = await prisma.role.upsert({
-      where: { name_tenantId: { name: r.name, tenantId: tenant.id } },
-      update: {},
-      create: { ...r, tenantId: tenant.id },
-    });
-    rolesMap[r.name] = role;
-  }
-  console.log('✅ Roles created');
-
-  // ── 6. Admin Staff ───────────────────────────────────────────────────────
-  const staffAccounts = [
-    {
-      email: 'principal@greenfieldacademy.ac.ke',
-      firstName: 'Margaret', lastName: 'Wanjiru',
-      role: 'Principal', employeeId: 'EMP001', designation: 'Principal',
-      department: 'Administration',
+  const principalUser = await prisma.user.upsert({
+    where: { email: 'principal@greenfield.acadchestra.com' },
+    update: {},
+    create: {
+      email: 'principal@greenfield.acadchestra.com',
+      password: hashedPassword,
+      firstName: 'Michael',
+      lastName: 'Gitau',
+      gender: Gender.MALE,
+      isEmailVerified: true,
+      isActive: true,
+      tenantId: tenant.id,
     },
-    {
-      email: 'admin@greenfieldacademy.ac.ke',
-      firstName: 'Peter', lastName: 'Otieno',
-      role: 'Admin', employeeId: 'EMP002', designation: 'School Administrator',
-      department: 'Administration',
-    },
-    {
-      email: 'deputy@greenfieldacademy.ac.ke',
-      firstName: 'Susan', lastName: 'Kamau',
-      role: 'Admin', employeeId: 'EMP003', designation: 'Deputy Principal',
-      department: 'Administration',
-    },
-  ];
+  });
+  await prisma.userRole.upsert({
+    where: { userId_roleId: { userId: principalUser.id, roleId: roleMap['Principal'] } },
+    update: {},
+    create: { userId: principalUser.id, roleId: roleMap['Principal'] },
+  });
 
-  const adminUsers: Record<string, any> = {};
-  for (const s of staffAccounts) {
-    const user = await prisma.user.upsert({
-      where: { email: s.email },
-      update: {},
-      create: {
-        email: s.email,
-        password: hashedPassword,
-        firstName: s.firstName,
-        lastName: s.lastName,
-        isEmailVerified: true,
-        tenantId: tenant.id,
-        gender: s.firstName === 'Peter' ? 'MALE' : 'FEMALE',
-        dateOfBirth: randomDOB(35, 55),
-        phone: `+2547${Math.floor(10000000 + Math.random() * 89999999)}`,
+  // ─────────────────────────────────────────────────────────────────────
+  // E. ACADEMIC YEAR 2026
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [5/14] Academic year…');
+
+  const academicYear = await prisma.academicYear.upsert({
+    where: { name_tenantId: { name: '2026', tenantId: tenant.id } },
+    update: {},
+    create: {
+      name: '2026',
+      startDate: new Date('2026-01-05'),
+      endDate: new Date('2026-11-27'),
+      isCurrent: true,
+      termStructure: 'THREE_TERMS',
+      totalTerms: 3,
+      status: AcademicYearStatus.ACTIVE,
+      streamsByGrade: {
+        1: ['East', 'West'],
+        2: ['East', 'West'],
+        3: ['East', 'West'],
+        4: ['East', 'West'],
+        5: ['East', 'West'],
+        6: ['East', 'West'],
       },
-    });
-    await prisma.userRole.upsert({
-      where: { userId_roleId: { userId: user.id, roleId: rolesMap[s.role].id } },
-      update: {},
-      create: { userId: user.id, roleId: rolesMap[s.role].id },
-    });
-    await prisma.teacher.upsert({
-      where: { employeeId_tenantId: { employeeId: s.employeeId, tenantId: tenant.id } },
-      update: {},
-      create: {
-        employeeId: s.employeeId,
-        joiningDate: new Date('2020-01-06'),
-        designation: s.designation,
-        department: s.department,
-        qualification: 'B.Ed (Primary Education), Kenyatta University',
-        experience: 10,
-        salary: 120000,
-        userId: user.id,
-        tenantId: tenant.id,
-        employmentStatus: 'ACTIVE',
-      },
-    });
-    adminUsers[s.employeeId] = user;
-  }
-  console.log('✅ Admin/Principal staff created');
+      tenantId: tenant.id,
+    },
+  });
 
-  // ── 7. CBC Subjects per grade band ──────────────────────────────────────
-  // PP1–PP2 (grade 0–1), Grade 1–3, Grade 4–6 have slightly different subjects
-  type SubjectDef = { name: string; code: string; gradeLevel: number; category: string; isCompulsory: boolean };
-  const subjectDefs: SubjectDef[] = [];
+  // ─────────────────────────────────────────────────────────────────────
+  // F. TERMS
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [6/14] Academic terms…');
 
-  // PP1 (grade 0) & PP2 (grade 1)
-  const ppSubjects = [
-    { name: 'Language Activities', code: 'LA', category: 'LANGUAGE' },
-    { name: 'Mathematical Activities', code: 'MA', category: 'CORE' },
-    { name: 'Environmental Activities', code: 'EA', category: 'CORE' },
-    { name: 'Psychomotor & Creative Activities', code: 'PCA', category: 'ARTS' },
-    { name: 'Religious Education Activities', code: 'REA', category: 'CORE' },
+  const term1 = await prisma.academicTerm.upsert({
+    where: { name_academicYearId: { name: 'Term 1', academicYearId: academicYear.id } },
+    update: {},
+    create: {
+      name: 'Term 1',
+      shortName: 'T1',
+      termNumber: 1,
+      startDate: new Date('2026-01-05'),
+      endDate: new Date('2026-04-03'),
+      isActive: false,
+      hasExams: true,
+      hasFees: true,
+      examWeeks: 2,
+      // Term 1 is done — lock it
+      isLocked: true,
+      lockedAt: new Date('2026-04-07'),
+      lockedReason: 'Term 1 completed and records locked',
+      billingLocked: true,
+      billingGeneratedAt: new Date('2026-01-05'),
+      academicYearId: academicYear.id,
+      tenantId: tenant.id,
+    },
+  });
+
+  const term2 = await prisma.academicTerm.upsert({
+    where: { name_academicYearId: { name: 'Term 2', academicYearId: academicYear.id } },
+    update: {},
+    create: {
+      name: 'Term 2',
+      shortName: 'T2',
+      termNumber: 2,
+      startDate: new Date('2026-04-27'),
+      endDate: new Date('2026-08-07'),
+      isActive: true,        // ← currently active
+      hasExams: true,
+      hasFees: true,
+      examWeeks: 2,
+      academicYearId: academicYear.id,
+      tenantId: tenant.id,
+    },
+  });
+
+  const term3 = await prisma.academicTerm.upsert({
+    where: { name_academicYearId: { name: 'Term 3', academicYearId: academicYear.id } },
+    update: {},
+    create: {
+      name: 'Term 3',
+      shortName: 'T3',
+      termNumber: 3,
+      startDate: new Date('2026-09-01'),
+      endDate: new Date('2026-11-27'),
+      isActive: false,
+      hasExams: true,
+      hasFees: true,
+      examWeeks: 2,
+      academicYearId: academicYear.id,
+      tenantId: tenant.id,
+    },
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // G. ACADEMIC PERIODS
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [7/14] Academic periods…');
+
+  const periodDefs: Array<{
+    name: string;
+    type: AcademicPeriodType;
+    start: string;
+    end: string;
+    termId: string | null;
+  }> = [
+    // Teaching periods
+    { name: 'Term 1',           type: AcademicPeriodType.TERM,           start: '2026-01-05', end: '2026-04-03', termId: term1.id  },
+    { name: 'Term 2',           type: AcademicPeriodType.TERM,           start: '2026-04-27', end: '2026-08-07', termId: term2.id  },
+    { name: 'Term 3',           type: AcademicPeriodType.TERM,           start: '2026-09-01', end: '2026-11-27', termId: term3.id  },
+    // Long holidays
+    { name: 'April Holiday',    type: AcademicPeriodType.HOLIDAY,        start: '2026-04-04', end: '2026-04-26', termId: null      },
+    { name: 'August Holiday',   type: AcademicPeriodType.HOLIDAY,        start: '2026-08-08', end: '2026-08-31', termId: null      },
+    { name: 'December Holiday', type: AcademicPeriodType.HOLIDAY,        start: '2026-11-28', end: '2026-12-31', termId: null      },
+    // Mid-term breaks
+    { name: 'T1 Mid-Break',     type: AcademicPeriodType.MID_TERM_BREAK, start: '2026-02-13', end: '2026-02-22', termId: term1.id  },
+    { name: 'T2 Mid-Break',     type: AcademicPeriodType.MID_TERM_BREAK, start: '2026-06-05', end: '2026-06-14', termId: term2.id  },
+    { name: 'T3 Mid-Break',     type: AcademicPeriodType.MID_TERM_BREAK, start: '2026-10-02', end: '2026-10-11', termId: term3.id  },
+    // Exam weeks
+    { name: 'T1 Exams',         type: AcademicPeriodType.EXAM_WEEK,      start: '2026-03-23', end: '2026-04-03', termId: term1.id  },
+    { name: 'T2 Exams',         type: AcademicPeriodType.EXAM_WEEK,      start: '2026-07-27', end: '2026-08-07', termId: term2.id  },
+    { name: 'T3 Exams',         type: AcademicPeriodType.EXAM_WEEK,      start: '2026-11-16', end: '2026-11-27', termId: term3.id  },
   ];
-  for (const g of [0, 1]) {
-    for (const s of ppSubjects) {
-      subjectDefs.push({ name: s.name, code: `${s.code}${g}`, gradeLevel: g, category: s.category, isCompulsory: true });
+
+  for (const p of periodDefs) {
+    try {
+      await prisma.academicPeriod.create({
+        data: {
+          name: p.name,
+          type: p.type,
+          startDate: new Date(p.start),
+          endDate: new Date(p.end),
+          academicYearId: academicYear.id,
+          ...(p.termId ? { academicTermId: p.termId } : {}),
+          tenantId: tenant.id,
+        },
+      });
+    } catch {
+      // Already seeded — skip
     }
   }
 
-  // Grade 1–3
-  const lowerPrimarySubjects = [
-    { name: 'Literacy Activities', code: 'LIT', category: 'LANGUAGE' },
-    { name: 'Kiswahili Language Activities', code: 'KIS', category: 'LANGUAGE' },
-    { name: 'Mathematical Activities', code: 'MTH', category: 'CORE' },
-    { name: 'Environmental Activities', code: 'ENV', category: 'SCIENCE' },
-    { name: 'Creative Arts', code: 'CRA', category: 'ARTS' },
-    { name: 'Physical & Health Education', code: 'PHE', category: 'SPORTS' },
-    { name: 'Christian Religious Education', code: 'CRE', category: 'CORE' },
-  ];
-  for (const g of [2, 3, 4]) {
-    for (const s of lowerPrimarySubjects) {
-      subjectDefs.push({ name: s.name, code: `${s.code}G${g}`, gradeLevel: g, category: s.category, isCompulsory: true });
+  // ─────────────────────────────────────────────────────────────────────
+  // H. SUBJECTS  (CBC curriculum, grade-specific codes)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [8/14] CBC subjects…');
+
+  /** subjectIdsByGrade[grade] = array of Subject IDs */
+  const subjectIdsByGrade: Record<number, string[]> = {};
+
+  for (let grade = 1; grade <= 6; grade++) {
+    const defs = grade <= 3 ? lpSubjects(grade) : upSubjects(grade);
+    const ids: string[] = [];
+
+    for (const def of defs) {
+      const subject = await prisma.subject.upsert({
+        where: { code_tenantId: { code: def.code, tenantId: tenant.id } },
+        update: {},
+        create: {
+          name: def.name,
+          code: def.code,
+          gradeLevel: grade,
+          category: def.category,
+          isCompulsory: def.isCompulsory,
+          credits: 1,
+          department: grade <= 3 ? 'Lower Primary' : 'Upper Primary',
+          tenantId: tenant.id,
+        },
+      });
+      ids.push(subject.id);
     }
+
+    subjectIdsByGrade[grade] = ids;
   }
 
-  // Grade 4–6
-  const upperPrimarySubjects = [
-    { name: 'English Language', code: 'ENG', category: 'LANGUAGE' },
-    { name: 'Kiswahili', code: 'KSW', category: 'LANGUAGE' },
-    { name: 'Mathematics', code: 'MAT', category: 'CORE' },
-    { name: 'Integrated Science', code: 'SCI', category: 'SCIENCE' },
-    { name: 'Social Studies', code: 'SST', category: 'CORE' },
-    { name: 'Creative Arts & Sports', code: 'CAS', category: 'ARTS' },
-    { name: 'Christian Religious Education', code: 'CRE', category: 'CORE' },
-    { name: 'Life Skills Education', code: 'LSE', category: 'CORE' },
-  ];
-  for (const g of [5, 6, 7]) {
-    for (const s of upperPrimarySubjects) {
-      subjectDefs.push({ name: s.name, code: `${s.code}G${g}`, gradeLevel: g, category: s.category, isCompulsory: true });
-    }
-  }
+  // ─────────────────────────────────────────────────────────────────────
+  // I. TEACHERS  (12 class teachers)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [9/14] Class teachers…');
 
-  const subjectsMap: Record<string, any> = {};
-  for (const s of subjectDefs) {
-    const subject = await prisma.subject.upsert({
-      where: { code_tenantId: { code: s.code, tenantId: tenant.id } },
-      update: {},
-      create: {
-        name: s.name,
-        code: s.code,
-        gradeLevel: s.gradeLevel,
-        category: s.category as any,
-        isCompulsory: s.isCompulsory,
-        credits: 1,
-        tenantId: tenant.id,
-      },
-    });
-    subjectsMap[s.code] = subject;
-  }
-  console.log('✅ CBC Subjects created');
+  /** teacherMap[classKey] = { userId, teacherId } */
+  const teacherMap: Record<string, { userId: string; teacherId: string }> = {};
 
-  // ── 8. Grade config ──────────────────────────────────────────────────────
-  // PP1=0, PP2=1, Gr1=2, Gr2=3, Gr3=4, Gr4=5, Gr5=6, Gr6=7
-  const grades = [
-    { label: 'PP1',     gradeLevel: 0, ageMin: 4,  ageMax: 5,  subjectCodePrefix: ppSubjects.map(s=>`${s.code}0`) },
-    { label: 'PP2',     gradeLevel: 1, ageMin: 5,  ageMax: 6,  subjectCodePrefix: ppSubjects.map(s=>`${s.code}1`) },
-    { label: 'Grade 1', gradeLevel: 2, ageMin: 6,  ageMax: 7,  subjectCodePrefix: lowerPrimarySubjects.map(s=>`${s.code}G2`) },
-    { label: 'Grade 2', gradeLevel: 3, ageMin: 7,  ageMax: 8,  subjectCodePrefix: lowerPrimarySubjects.map(s=>`${s.code}G3`) },
-    { label: 'Grade 3', gradeLevel: 4, ageMin: 8,  ageMax: 9,  subjectCodePrefix: lowerPrimarySubjects.map(s=>`${s.code}G4`) },
-    { label: 'Grade 4', gradeLevel: 5, ageMin: 9,  ageMax: 10, subjectCodePrefix: upperPrimarySubjects.map(s=>`${s.code}G5`) },
-    { label: 'Grade 5', gradeLevel: 6, ageMin: 10, ageMax: 11, subjectCodePrefix: upperPrimarySubjects.map(s=>`${s.code}G6`) },
-    { label: 'Grade 6', gradeLevel: 7, ageMin: 11, ageMax: 12, subjectCodePrefix: upperPrimarySubjects.map(s=>`${s.code}G7`) },
-  ];
+  for (let i = 0; i < TEACHER_PROFILES.length; i++) {
+    const tp = TEACHER_PROFILES[i];
+    const slug = `${tp.firstName.toLowerCase()}.${tp.lastName.toLowerCase()}`;
+    const email = `teacher.${slug}@greenfield.acadchestra.com`;
+    const empId = `GF-TCH-${pad(i + 1)}`;
 
-  const streams = ['A', 'B'];
-
-  // ── 9. Class Teachers (one per stream per grade = 16 teachers) ──────────
-  // Teacher pool - real Kenyan names
-  const teacherPool = [
-    { firstName: 'Alice',    lastName: 'Mwangi',   gender: 'FEMALE', qual: 'B.Ed (Early Childhood)', emp: 'EMP010' },
-    { firstName: 'John',     lastName: 'Kariuki',   gender: 'MALE',   qual: 'Dip. Education (KTTC)',  emp: 'EMP011' },
-    { firstName: 'Eunice',   lastName: 'Achieng',   gender: 'FEMALE', qual: 'B.Ed (Primary)',          emp: 'EMP012' },
-    { firstName: 'Michael',  lastName: 'Onyango',   gender: 'MALE',   qual: 'B.Ed (Primary)',          emp: 'EMP013' },
-    { firstName: 'Dorothy',  lastName: 'Njoroge',   gender: 'FEMALE', qual: 'B.Ed (Primary)',          emp: 'EMP014' },
-    { firstName: 'George',   lastName: 'Mutua',     gender: 'MALE',   qual: 'B.Ed (Science & Math)',   emp: 'EMP015' },
-    { firstName: 'Florence', lastName: 'Owino',     gender: 'FEMALE', qual: 'B.Ed (Primary)',          emp: 'EMP016' },
-    { firstName: 'David',    lastName: 'Gitau',     gender: 'MALE',   qual: 'B.Ed (Languages)',        emp: 'EMP017' },
-    { firstName: 'Mercy',    lastName: 'Otieno',    gender: 'FEMALE', qual: 'B.Ed (Primary)',          emp: 'EMP018' },
-    { firstName: 'Patrick',  lastName: 'Waweru',    gender: 'MALE',   qual: 'Dip. Education (KTTC)',  emp: 'EMP019' },
-    { firstName: 'Esther',   lastName: 'Omondi',    gender: 'FEMALE', qual: 'B.Ed (Primary)',          emp: 'EMP020' },
-    { firstName: 'Charles',  lastName: 'Kimani',    gender: 'MALE',   qual: 'B.Ed (Science)',          emp: 'EMP021' },
-    { firstName: 'Lydia',    lastName: 'Adhiambo',  gender: 'FEMALE', qual: 'B.Ed (Primary)',          emp: 'EMP022' },
-    { firstName: 'Joseph',   lastName: 'Njenga',    gender: 'MALE',   qual: 'B.Ed (Math)',             emp: 'EMP023' },
-    { firstName: 'Monica',   lastName: 'Chebet',    gender: 'FEMALE', qual: 'B.Ed (Primary)',          emp: 'EMP024' },
-    { firstName: 'Samuel',   lastName: 'Simiyu',    gender: 'MALE',   qual: 'B.Ed (Primary)',          emp: 'EMP025' },
-  ];
-
-  const classTeachers: any[] = [];
-  for (let i = 0; i < teacherPool.length; i++) {
-    const tp = teacherPool[i];
-    const email = `${tp.firstName.toLowerCase()}.${tp.lastName.toLowerCase()}@greenfieldacademy.ac.ke`;
     const user = await prisma.user.upsert({
       where: { email },
       update: {},
@@ -341,273 +495,362 @@ async function main() {
         password: hashedPassword,
         firstName: tp.firstName,
         lastName: tp.lastName,
+        gender: tp.gender,
         isEmailVerified: true,
+        isActive: true,
         tenantId: tenant.id,
-        gender: tp.gender as any,
-        dateOfBirth: randomDOB(25, 45),
-        phone: `+2547${Math.floor(10000000 + Math.random() * 89999999)}`,
       },
     });
+
     await prisma.userRole.upsert({
-      where: { userId_roleId: { userId: user.id, roleId: rolesMap['Teacher'].id } },
+      where: { userId_roleId: { userId: user.id, roleId: roleMap['Teacher'] } },
       update: {},
-      create: { userId: user.id, roleId: rolesMap['Teacher'].id },
+      create: { userId: user.id, roleId: roleMap['Teacher'] },
     });
+
     const teacher = await prisma.teacher.upsert({
-      where: { employeeId_tenantId: { employeeId: tp.emp, tenantId: tenant.id } },
+      where: { employeeId_tenantId: { employeeId: empId, tenantId: tenant.id } },
       update: {},
       create: {
-        employeeId: tp.emp,
-        joiningDate: new Date('2022-01-10'),
-        designation: 'Class Teacher',
-        department: 'Primary',
-        qualification: tp.qual,
-        experience: Math.floor(Math.random() * 8) + 2,
-        salary: Math.floor(Math.random() * 30000) + 60000,
+        employeeId: empId,
+        joiningDate: new Date('2024-01-08'),
+        designation: tp.designation,
+        department: tp.dept,
+        qualification: 'Bachelor of Education (B.Ed)',
+        experience: 3 + (i % 9),
+        salary: 45000 + i * 2000,
+        employmentStatus: EmploymentStatus.ACTIVE,
         userId: user.id,
         tenantId: tenant.id,
-        employmentStatus: 'ACTIVE',
       },
     });
-    classTeachers.push(teacher);
+
+    teacherMap[tp.classKey] = { userId: user.id, teacherId: teacher.id };
   }
-  console.log('✅ Class teachers created (16)');
 
-  // ── 10. Classes, ClassSubjects, Students ─────────────────────────────────
-  let teacherAssignIdx = 0;
-  let studentCounter = 1;
-  let admissionCounter = 1;
-  let rollCounter: Record<string, number> = {};
+  // ─────────────────────────────────────────────────────────────────────
+  // J. CLASSES
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [10/14] Classes (Grade 1–6, East & West)…');
 
-  for (const grade of grades) {
-    for (const stream of streams) {
-      const className = `${grade.label} ${stream}`;
-      const classTeacher = classTeachers[teacherAssignIdx++];
+  /** classMap[classKey] = classId */
+  const classMap: Record<string, string> = {};
 
-      // Create class
-      const cls = await prisma.class.upsert({
-        where: {
-          name_academicYearId_tenantId: {
-            name: className,
-            academicYearId: academicYear.id,
-            tenantId: tenant.id,
-          },
-        },
-        update: {},
-        create: {
+  for (const cfg of CLASS_CONFIGS) {
+    const { teacherId } = teacherMap[cfg.key];
+    const className = `Grade ${cfg.grade} ${cfg.stream}`;
+
+    const cls = await prisma.class.upsert({
+      where: {
+        name_academicYearId_tenantId: {
           name: className,
-          displayName: className,
-          gradeLevel: grade.gradeLevel,
-          section: stream,
-          capacity: 20,
-          classType: 'REGULAR',
-          stream,
-          curriculum: 'CBC',
-          language: 'English',
           academicYearId: academicYear.id,
-          classTeacherId: classTeacher.id,
           tenantId: tenant.id,
         },
-      });
-
-      // Assign subjects to class
-      for (const subjectCode of grade.subjectCodePrefix) {
-        const subject = subjectsMap[subjectCode];
-        if (!subject) continue;
-        await prisma.classSubject.upsert({
-          where: { classId_subjectId: { classId: cls.id, subjectId: subject.id } },
-          update: {},
-          create: {
-            classId: cls.id,
-            subjectId: subject.id,
-            teacherId: classTeacher.id,
-            periodsPerWeek: 5,
-          },
-        });
-      }
-
-      // Create 20 students per stream
-      if (!rollCounter[grade.label]) rollCounter[grade.label] = 1;
-
-      for (let s = 0; s < 20; s++) {
-        const gender: 'MALE' | 'FEMALE' = s % 2 === 0 ? 'MALE' : 'FEMALE';
-        const { first, last } = nextName(gender);
-        const email = `student${pad(studentCounter, 4)}@greenfieldacademy.ac.ke`;
-        const admNo = `GFA/${academicYear.name.split('-')[0]}/${pad(admissionCounter, 4)}`;
-        const rollNo = `${grade.label.replace(/\s+/g, '').toUpperCase()}${stream}/${pad(rollCounter[grade.label], 3)}`;
-
-        let user: any;
-        const existingUser = await prisma.user.findFirst({ where: { email } });
-        if (existingUser) {
-          user = existingUser;
-        } else {
-          user = await prisma.user.create({
-            data: {
-              email,
-              password: hashedPassword,
-              firstName: first,
-              lastName: last,
-              isEmailVerified: true,
-              tenantId: tenant.id,
-              gender,
-              dateOfBirth: randomDOB(grade.ageMin, grade.ageMax),
-              phone: null,
-            },
-          });
-        }
-
-        await prisma.userRole.upsert({
-          where: { userId_roleId: { userId: user.id, roleId: rolesMap['Student'].id } },
-          update: {},
-          create: { userId: user.id, roleId: rolesMap['Student'].id },
-        });
-
-        const existingStudent = await prisma.student.findFirst({
-          where: { userId: user.id },
-        });
-
-        if (!existingStudent) {
-          await prisma.student.create({
-            data: {
-              rollNumber: rollNo,
-              admissionNumber: admNo,
-              admissionDate: new Date('2025-01-06'),
-              userId: user.id,
-              classId: cls.id,
-              tenantId: tenant.id,
-              academicStatus: 'ACTIVE',
-              emergencyContact: `${last} Parent`,
-              emergencyPhone: `+2547${Math.floor(10000000 + Math.random() * 89999999)}`,
-            },
-          });
-        }
-
-        studentCounter++;
-        admissionCounter++;
-        rollCounter[grade.label]++;
-      }
-
-      console.log(`  ✅ ${className}: 20 students, teacher: ${classTeacher.id}`);
-    }
-  }
-
-  // ── 11. Fee Structures (CBC Term-wise) ───────────────────────────────────
-  const feeStructuresByGrade = [
-    { gradeLevels: [0, 1], name: 'PP1 & PP2 Term Fee', tuition: 15000, activity: 2000, lunch: 3000 },
-    { gradeLevels: [2, 3, 4], name: 'Lower Primary Term Fee', tuition: 18000, activity: 2500, lunch: 3000 },
-    { gradeLevels: [5, 6, 7], name: 'Upper Primary Term Fee', tuition: 22000, activity: 3000, lunch: 3000 },
-  ];
-
-  for (const term of terms) {
-    for (const fsd of feeStructuresByGrade) {
-      const fs = await prisma.feeStructure.create({
-        data: {
-          name: `${fsd.name} - ${term.shortName}`,
-          description: `CBC ${fsd.name} for ${term.name}`,
-          feeType: 'TERM_WISE',
-          isRecurring: true,
-          isOptional: false,
-          academicYearId: academicYear.id,
-          academicTermId: term.id,
-          tenantId: tenant.id,
-        },
-      });
-
-      await prisma.feeComponent.create({
-        data: {
-          name: 'Tuition Fee',
-          description: 'Tuition and instruction costs',
-          amount: fsd.tuition,
-          currency: 'KES',
-          isCompulsory: true,
-          category: 'ACADEMIC',
-          dueDate: term.startDate,
-          lateFee: 500,
-          feeStructureId: fs.id,
-        },
-      });
-      await prisma.feeComponent.create({
-        data: {
-          name: 'Activity Fee',
-          description: 'CBC activities, sports and arts',
-          amount: fsd.activity,
-          currency: 'KES',
-          isCompulsory: true,
-          category: 'ACTIVITIES',
-          dueDate: term.startDate,
-          lateFee: 0,
-          feeStructureId: fs.id,
-        },
-      });
-      await prisma.feeComponent.create({
-        data: {
-          name: 'Lunch Program',
-          description: 'School lunch program',
-          amount: fsd.lunch,
-          currency: 'KES',
-          isCompulsory: false,
-          category: 'MEALS',
-          dueDate: term.startDate,
-          lateFee: 0,
-          feeStructureId: fs.id,
-        },
-      });
-    }
-  }
-  console.log('✅ Fee structures and components created');
-
-  // ── 12. Examinations ─────────────────────────────────────────────────────
-  const examDefs = [
-    { name: 'Term 1 End-of-Term Exam', type: 'TERM_EXAM', termIdx: 0, start: new Date('2025-03-24'), end: new Date('2025-04-03') },
-    { name: 'Term 2 Mid-Term Assessment', type: 'MID_TERM', termIdx: 1, start: new Date('2025-06-09'), end: new Date('2025-06-13') },
-    { name: 'Term 2 End-of-Term Exam', type: 'TERM_EXAM', termIdx: 1, start: new Date('2025-07-21'), end: new Date('2025-08-01') },
-    { name: 'Term 3 End-of-Term Exam', type: 'TERM_EXAM', termIdx: 2, start: new Date('2025-11-17'), end: new Date('2025-11-28') },
-  ];
-
-  for (const e of examDefs) {
-    await prisma.examination.create({
-      data: {
-        name: e.name,
-        type: e.type as any,
-        startDate: e.start,
-        endDate: e.end,
-        duration: 120,
-        maxMarks: 100,
-        passingMarks: 40,
-        academicTermId: terms[e.termIdx].id,
+      },
+      update: {},
+      create: {
+        name: className,
+        displayName: `Gr.${cfg.grade} ${cfg.stream[0]}`,
+        gradeLevel: cfg.grade,
+        stream: cfg.stream,
+        section: cfg.stream === 'East' ? 'A' : 'B',
+        capacity: 20,
+        classType: ClassType.REGULAR,
+        classTeacherId: teacherId,
+        academicYearId: academicYear.id,
         tenantId: tenant.id,
       },
     });
+
+    classMap[cfg.key] = cls.id;
   }
-  console.log('✅ Examinations created');
 
-  // ── Summary ──────────────────────────────────────────────────────────────
-  const totalStudents = await prisma.student.count({ where: { tenantId: tenant.id } });
-  const totalTeachers = await prisma.teacher.count({ where: { tenantId: tenant.id } });
-  const totalClasses = await prisma.class.count({ where: { tenantId: tenant.id } });
+  // ─────────────────────────────────────────────────────────────────────
+  // K. CLASS SUBJECTS
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [11/14] Class–subject links…');
 
-  console.log('\n🎉 Greenfield Academy seeding complete!\n');
-  console.log('═══════════════════════════════════════════════════');
-  console.log('  School   : Greenfield Academy');
-  console.log('  Domain   : greenfield.acadchestra.com');
-  console.log('  Curriculum: CBC (Kenya)');
-  console.log('  Grades   : PP1, PP2, Grade 1–6');
-  console.log('  Streams  : 2 per grade (A & B), 20 students each');
-  console.log(`  Students : ${totalStudents}`);
-  console.log(`  Teachers : ${totalTeachers} (incl. admin staff)`);
-  console.log(`  Classes  : ${totalClasses}`);
-  console.log('═══════════════════════════════════════════════════');
-  console.log('\n📋 Login Credentials (all use password: School123!)');
-  console.log('  Principal : principal@greenfieldacademy.ac.ke');
-  console.log('  Admin     : admin@greenfieldacademy.ac.ke');
-  console.log('  Deputy    : deputy@greenfieldacademy.ac.ke');
-  console.log('  Teachers  : firstname.lastname@greenfieldacademy.ac.ke');
-  console.log('  Students  : student0001@greenfieldacademy.ac.ke ... student0160@greenfieldacademy.ac.ke');
+  for (const cfg of CLASS_CONFIGS) {
+    const classId = classMap[cfg.key];
+    const { teacherId } = teacherMap[cfg.key];
+    const subjectIds = subjectIdsByGrade[cfg.grade] ?? [];
+    const subjectDefs = cfg.grade <= 3 ? lpSubjects(cfg.grade) : upSubjects(cfg.grade);
+
+    for (let si = 0; si < subjectIds.length; si++) {
+      try {
+        await prisma.classSubject.create({
+          data: {
+            classId,
+            subjectId: subjectIds[si],
+            teacherId,
+            periodsPerWeek: subjectDefs[si]?.periodsPerWeek ?? 5,
+          },
+        });
+      } catch {
+        // Already exists — skip
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // L. STUDENTS  (20 per class = 240 total)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [12/14] Students (240 total)…');
+
+  /** studentsByClass[classKey] = array of { userId, studentId } */
+  const studentsByClass: Record<string, Array<{ userId: string; studentId: string }>> = {};
+  let admissionCounter = 1;
+
+  for (let ci = 0; ci < CLASS_CONFIGS.length; ci++) {
+    const cfg = CLASS_CONFIGS[ci];
+    const classId = classMap[cfg.key];
+    const classStudents: Array<{ userId: string; studentId: string }> = [];
+
+    for (let si = 0; si < 20; si++) {
+      const isMale = si < 10;
+      const firstName = isMale ? MALE_FIRST[si] : FEMALE_FIRST[si - 10];
+
+      // Rotate last names so different classes get different surnames
+      const lastName = LAST_NAMES[(ci * 20 + si) % LAST_NAMES.length];
+      const gender = isMale ? Gender.MALE : Gender.FEMALE;
+
+      // Email includes class key to guarantee global uniqueness
+      const emailSlug = `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${cfg.key.toLowerCase()}`;
+      const email = `${emailSlug}@greenfield.acadchestra.com`;
+
+      const admissionNumber = `GF-2026-${pad(admissionCounter++)}`;
+      const rollNumber = `${cfg.key}-${pad(si + 1, 2)}`;
+
+      // Age-appropriate DOB — Grade 1 ≈ 6 yrs old, Grade 6 ≈ 11 yrs old
+      const birthYear = 2026 - 5 - cfg.grade;
+      const birthMonth = pad((si % 12) + 1, 2);
+      const birthDay = pad((si % 28) + 1, 2);
+      const dob = new Date(`${birthYear}-${birthMonth}-${birthDay}`);
+
+      const user = await prisma.user.upsert({
+        where: { email },
+        update: {},
+        create: {
+          email,
+          password: hashedPassword,
+          firstName,
+          lastName,
+          gender,
+          dateOfBirth: dob,
+          isEmailVerified: true,
+          isActive: true,
+          tenantId: tenant.id,
+        },
+      });
+
+      await prisma.userRole.upsert({
+        where: { userId_roleId: { userId: user.id, roleId: roleMap['Student'] } },
+        update: {},
+        create: { userId: user.id, roleId: roleMap['Student'] },
+      });
+
+      const student = await prisma.student.upsert({
+        where: { admissionNumber_tenantId: { admissionNumber, tenantId: tenant.id } },
+        update: {},
+        create: {
+          admissionNumber,
+          rollNumber,
+          admissionDate: new Date('2026-01-05'),
+          academicStatus: StudentStatus.ACTIVE,
+          userId: user.id,
+          classId,
+          tenantId: tenant.id,
+        },
+      });
+
+      // StudentClassHistory — check before inserting to stay idempotent
+      const existingHistory = await prisma.studentClassHistory.findFirst({
+        where: {
+          studentId: student.id,
+          academicYearId: academicYear.id,
+          classId,
+        },
+      });
+      if (!existingHistory) {
+        await prisma.studentClassHistory.create({
+          data: {
+            studentId: student.id,
+            classId,
+            academicYearId: academicYear.id,
+            stream: cfg.stream,
+            startDate: new Date('2026-01-05'),
+            isCurrent: true,
+            reason: 'Initial enrolment for Academic Year 2026',
+            tenantId: tenant.id,
+          },
+        });
+      }
+
+      classStudents.push({ userId: user.id, studentId: student.id });
+    }
+
+    studentsByClass[cfg.key] = classStudents;
+    process.stdout.write(`    ${cfg.key}: ${classStudents.length} students ✓\n`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // M. ATTENDANCE SESSIONS & RECORDS  (Term 1 — weeks 1 & 2)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [13/14] Term 1 attendance sessions & records…');
+
+  for (let ci = 0; ci < CLASS_CONFIGS.length; ci++) {
+    const cfg = CLASS_CONFIGS[ci];
+    const classId = classMap[cfg.key];
+    const { userId: teacherUserId } = teacherMap[cfg.key];
+    const students = studentsByClass[cfg.key];
+
+    for (let di = 0; di < TERM1_ATTENDANCE_DATES.length; di++) {
+      const sessionDate = TERM1_ATTENDANCE_DATES[di];
+      const dateStr = sessionDate.toISOString().slice(0, 10);
+
+      // Create session
+      let session: { id: string };
+      try {
+        session = await prisma.attendanceSession.create({
+          data: {
+            sessionDate,
+            type: AttendanceSessionType.DAILY,
+            status: AttendanceSessionStatus.FINALIZED,
+            totalStudents: 20,
+            presentCount: 0, // updated after records
+            absentCount: 0,
+            lateCount: 0,
+            excusedCount: 0,
+            classId,
+            academicYearId: academicYear.id,
+            academicTermId: term1.id,
+            takenById: teacherUserId,
+            takenAt: new Date(`${dateStr}T06:00:00.000Z`),
+            finalizedById: teacherUserId,
+            finalizedAt: new Date(`${dateStr}T07:00:00.000Z`),
+            tenantId: tenant.id,
+          },
+        });
+      } catch {
+        // Session already exists — find it
+        session = await prisma.attendanceSession.findFirstOrThrow({
+          where: {
+            classId,
+            sessionDate,
+            type: AttendanceSessionType.DAILY,
+            subjectId: null,
+          },
+        });
+      }
+
+      // Create records & tally aggregates
+      let present = 0, absent = 0, late = 0, excused = 0;
+
+      for (let si = 0; si < students.length; si++) {
+        const status = attendanceFor(ci, si, di);
+        if (status === AttendanceStatus.PRESENT)      present++;
+        else if (status === AttendanceStatus.ABSENT)  absent++;
+        else if (status === AttendanceStatus.LATE)    late++;
+        else                                          excused++;
+
+        await prisma.attendanceRecord.upsert({
+          where: {
+            sessionId_studentId: {
+              sessionId: session.id,
+              studentId: students[si].studentId,
+            },
+          },
+          update: { status },
+          create: {
+            status,
+            sessionId: session.id,
+            studentId: students[si].studentId,
+            markedById: teacherUserId,
+            markedAt: new Date(`${dateStr}T06:30:00.000Z`),
+            tenantId: tenant.id,
+          },
+        });
+      }
+
+      // Update aggregate counts on the session
+      await prisma.attendanceSession.update({
+        where: { id: session.id },
+        data: { presentCount: present, absentCount: absent, lateCount: late, excusedCount: excused },
+      });
+    }
+
+    process.stdout.write(`    ${cfg.key}: ${TERM1_ATTENDANCE_DATES.length} sessions ✓\n`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // N. EXAMINATIONS  (End-of-Term 1, one per grade)
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('  [14/14] Term 1 examinations…');
+
+  for (let grade = 1; grade <= 6; grade++) {
+    try {
+      await prisma.examination.create({
+        data: {
+          name: `Grade ${grade} End of Term 1 Examination`,
+          type: ExamType.TERM_EXAM,
+          startDate: new Date('2026-03-23'),
+          endDate: new Date('2026-04-03'),
+          duration: grade <= 3 ? 90 : 120,
+          maxMarks: 100,
+          passingMarks: 50,
+          academicTermId: term1.id,
+          tenantId: tenant.id,
+        },
+      });
+    } catch {
+      // Already exists — skip
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // SUMMARY
+  // ─────────────────────────────────────────────────────────────────────
+  const sessionCount = TERM1_ATTENDANCE_DATES.length * CLASS_CONFIGS.length;
+  const recordCount  = sessionCount * 20;
+
+  console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║          ✅  Greenfield CBC Primary School — Seed Done           ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Tenant   : Greenfield CBC Primary School                        ║
+║  Domain   : greenfield.acadchestra.com                           ║
+╠══════════════════════════════════════════════════════════════════╣
+║  ACCOUNTS  (password: Admin123!)                                 ║
+║  Admin     : admin@greenfield.acadchestra.com                    ║
+║  Principal : principal@greenfield.acadchestra.com                ║
+║  Teachers  : teacher.jane.wanjiku@greenfield.acadchestra.com     ║
+║              teacher.david.kamau@greenfield.acadchestra.com      ║
+║              teacher.mary.otieno@greenfield.acadchestra.com      ║
+║              … (12 class teachers total, T1 = TCH-001…012)      ║
+║  Students  : firstname.lastname.g1e@greenfield.acadchestra.com   ║
+║              (240 students, 20 per class, GF-2026-001…240)       ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Academic Year 2026                                              ║
+║  Term 1  : Jan 5  – Apr 3  2026  ← LOCKED (completed)           ║
+║  Term 2  : Apr 27 – Aug 7  2026  ← ACTIVE  (current term)       ║
+║  Term 3  : Sep 1  – Nov 27 2026  ← upcoming                     ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Classes     : 12  (Grade 1–6 × East & West)                    ║
+║  Students    : 240 (20 per class)                                ║
+║  Subjects    : CBC-aligned per grade (7 LP · 9–10 UP)            ║
+║  Attendance  : ${String(sessionCount).padEnd(3)} sessions  ·  ${String(recordCount).padEnd(5)} records  (Term 1, Wks 1–2)  ║
+║  Examinations: 6   (End-of-Term 1, one per grade)                ║
+╚══════════════════════════════════════════════════════════════════╝
+`);
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// ENTRY POINT
+// ─────────────────────────────────────────────────────────────────────
 main()
   .catch((e) => {
-    console.error('❌ Seeding failed:', e);
+    console.error('\n❌  Seeding failed:\n', e);
     process.exit(1);
   })
   .finally(async () => {

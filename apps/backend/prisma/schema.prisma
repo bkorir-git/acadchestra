@@ -44,12 +44,12 @@ enum AcademicYearStatus {
 }
 
 enum CalendarPhase {
-  SETUP              // Year created, terms defined, no teaching yet
-  TEACHING           // Normal term in progress, instruction active
-  EXAMS              // Exam window — academic structure locked
-  BREAK              // Holiday / mid-term break — teaching paused
-  PROMOTION_WINDOW   // Year-end promotion window — promotions allowed
-  ARCHIVED           // Year ended and archived
+  SETUP // Year created, terms defined, no teaching yet
+  TEACHING // Normal term in progress, instruction active
+  EXAMS // Exam window — academic structure locked
+  BREAK // Holiday / mid-term break — teaching paused
+  PROMOTION_WINDOW // Year-end promotion window — promotions allowed
+  ARCHIVED // Year ended and archived
 }
 
 enum AcademicPeriodType {
@@ -293,24 +293,26 @@ enum ActivityEntityType {
   STUDENT_DISCOUNT
   PROMOTION
   NOTIFICATION
-    PROMOTION_PLAN
+  PROMOTION_PLAN
   PROMOTION_PLAN_ENTRY
+  ATTENDANCE_SESSION
+  ATTENDANCE_RECORD
 }
 
 enum PromotionPlanStatus {
-  DRAFT       // Generated, not reviewed
-  REVIEWING   // Admin is editing mappings
-  APPROVED    // Validated, ready to execute
-  EXECUTING   // In progress
-  EXECUTED    // Committed
+  DRAFT // Generated, not reviewed
+  REVIEWING // Admin is editing mappings
+  APPROVED // Validated, ready to execute
+  EXECUTING // In progress
+  EXECUTED // Committed
   CANCELLED
 }
 
 enum PromotionStrategy {
-  PRESERVE_STREAM        // Keep same stream in target grade
-  BALANCED_DISTRIBUTION  // Spread students across streams
-  CUSTOM_MAPPING         // Fully manual — no strategy inference
-  GRADE_ONLY             // Target year has no streams — grade++ only
+  PRESERVE_STREAM // Keep same stream in target grade
+  BALANCED_DISTRIBUTION // Spread students across streams
+  CUSTOM_MAPPING // Fully manual — no strategy inference
+  GRADE_ONLY // Target year has no streams — grade++ only
 }
 
 enum PromotionPlanEntryStatus {
@@ -321,6 +323,28 @@ enum PromotionPlanEntryStatus {
   SKIPPED
   GRADUATED
   RETAINED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+  SICK
+  HOLIDAY
+}
+
+enum AttendanceSessionStatus {
+  DRAFT // Register opened but not yet finalized
+  FINALIZED // Teacher submitted
+  LOCKED // Admin-locked (no further edits)
+}
+
+enum AttendanceSessionType {
+  DAILY // Whole-day class register (most common)
+  SUBJECT // Subject-period based (optional)
+  AM // Morning only
+  PM // Afternoon only
 }
 
 // =============================================================================
@@ -349,31 +373,33 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  settings               TenantSettings?
-  users                  User[]
-  roles                  Role[]
-  academicYears          AcademicYear[]
-  academicTerms          AcademicTerm[]
-  academicPeriods        AcademicPeriod[]
-  classes                Class[]
-  subjects               Subject[]
-  students               Student[]
-  studentClassHistories  StudentClassHistory[]
-  teachers               Teacher[]
-  feeStructures          FeeStructure[]
-  feeStructureVersions   FeeStructureVersion[]
-  studentFees            StudentFee[]
-  feePayments            FeePayment[]
-  examinations           Examination[]
-  activityLogs           ActivityLog[]
-  feeStructureLevels     FeeStructureLevel[]
-  feeLedgerEntries       FeeLedger[]
-  invoices               Invoice[]
-  studentDiscounts       StudentDiscount[]
-  promotions             StudentPromotion[]
-  notifications          Notification[]
-  reportSnapshots        ReportSnapshot[]
-    promotionPlans  PromotionPlan[]
+  settings              TenantSettings?
+  users                 User[]
+  roles                 Role[]
+  academicYears         AcademicYear[]
+  academicTerms         AcademicTerm[]
+  academicPeriods       AcademicPeriod[]
+  classes               Class[]
+  subjects              Subject[]
+  students              Student[]
+  studentClassHistories StudentClassHistory[]
+  teachers              Teacher[]
+  feeStructures         FeeStructure[]
+  feeStructureVersions  FeeStructureVersion[]
+  studentFees           StudentFee[]
+  feePayments           FeePayment[]
+  examinations          Examination[]
+  activityLogs          ActivityLog[]
+  feeStructureLevels    FeeStructureLevel[]
+  feeLedgerEntries      FeeLedger[]
+  invoices              Invoice[]
+  studentDiscounts      StudentDiscount[]
+  promotions            StudentPromotion[]
+  notifications         Notification[]
+  reportSnapshots       ReportSnapshot[]
+  promotionPlans        PromotionPlan[]
+  attendanceSessions    AttendanceSession[]
+  attendanceRecords     AttendanceRecord[]
 
   @@map("tenants")
 }
@@ -509,6 +535,7 @@ model AcademicYear {
   classes               Class[]
   terms                 AcademicTerm[]
   academicPeriods       AcademicPeriod[]
+  attendanceSessions    AttendanceSession[]
   feeStructures         FeeStructure[]
   studentClassHistories StudentClassHistory[]
   promotions            StudentPromotion[]
@@ -550,10 +577,11 @@ model AcademicTerm {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  feeStructures   FeeStructure[]
-  examinations    Examination[]
-  invoices        Invoice[]
-  academicPeriods AcademicPeriod[]
+  feeStructures      FeeStructure[]
+  attendanceSessions AttendanceSession[]
+  examinations       Examination[]
+  invoices           Invoice[]
+  academicPeriods    AcademicPeriod[]
 
   @@unique([academicYearId, termNumber])
   @@unique([name, academicYearId])
@@ -588,39 +616,39 @@ model AcademicPeriod {
 }
 
 model PromotionPlan {
-  id                    String              @id @default(cuid())
-  name                  String
-  status                PromotionPlanStatus @default(DRAFT)
-  strategy              PromotionStrategy   @default(PRESERVE_STREAM)
+  id       String              @id @default(cuid())
+  name     String
+  status   PromotionPlanStatus @default(DRAFT)
+  strategy PromotionStrategy   @default(PRESERVE_STREAM)
 
-  fromAcademicYearId    String
-  toAcademicYearId      String
+  fromAcademicYearId String
+  toAcademicYearId   String
 
-  totalStudents         Int                 @default(0)
-  plannedPromotions     Int                 @default(0)
-  plannedGraduations    Int                 @default(0)
-  plannedRetentions     Int                 @default(0)
-  conflictsCount        Int                 @default(0)
-  warningsCount         Int                 @default(0)
+  totalStudents      Int @default(0)
+  plannedPromotions  Int @default(0)
+  plannedGraduations Int @default(0)
+  plannedRetentions  Int @default(0)
+  conflictsCount     Int @default(0)
+  warningsCount      Int @default(0)
 
-  notes                 String?
-  summary               Json?               // warnings, stats, strategy snapshot
+  notes   String?
+  summary Json? // warnings, stats, strategy snapshot
 
-  createdById           String?
-  approvedById          String?
-  approvedAt            DateTime?
-  executedById          String?
-  executedAt            DateTime?
-  cancelledById         String?
-  cancelledAt           DateTime?
+  createdById   String?
+  approvedById  String?
+  approvedAt    DateTime?
+  executedById  String?
+  executedAt    DateTime?
+  cancelledById String?
+  cancelledAt   DateTime?
 
-  tenantId              String
-  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  entries               PromotionPlanEntry[]
+  entries PromotionPlanEntry[]
 
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([tenantId, status])
   @@index([tenantId, toAcademicYearId])
@@ -628,13 +656,13 @@ model PromotionPlan {
 }
 
 model PromotionPlanEntry {
-  id              String                    @id @default(cuid())
+  id String @id @default(cuid())
 
-  planId          String
-  plan            PromotionPlan             @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planId String
+  plan   PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
-  studentId       String
-  fromClassId     String?
+  studentId        String
+  fromClassId      String?
   suggestedClassId String?
   overrideClassId  String?
   finalClassId     String?
@@ -644,21 +672,21 @@ model PromotionPlanEntry {
   overrideStream  String?
   finalStream     String?
 
-  status          PromotionPlanEntryStatus  @default(PENDING)
-  action          String                    // PROMOTE | RETAIN | GRADUATE | SKIP
+  status PromotionPlanEntryStatus @default(PENDING)
+  action String // PROMOTE | RETAIN | GRADUATE | SKIP
 
-  warnings        Json?                     // string[]
-  conflicts       Json?                     // string[]
-  adminNotes      String?
+  warnings   Json? // string[]
+  conflicts  Json? // string[]
+  adminNotes String?
 
   // Populated after execution
   executedPromotionId String?
   executedAt          DateTime?
 
-  tenantId        String
+  tenantId String
 
-  createdAt       DateTime                  @default(now())
-  updatedAt       DateTime                  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([planId, studentId])
   @@index([planId, status])
@@ -690,13 +718,14 @@ model Class {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  students              Student[]              @relation("StudentCurrentClass")
+  students              Student[]             @relation("StudentCurrentClass")
   studentClassHistories StudentClassHistory[]
   subjects              ClassSubject[]
+  attendanceSessions    AttendanceSession[]
   feeStructures         FeeStructure[]
   feeStructureLevels    FeeStructureLevel[]
-  promotionsFrom        StudentPromotion[]     @relation("PromotionFromClass")
-  promotionsTo          StudentPromotion[]     @relation("PromotionToClass")
+  promotionsFrom        StudentPromotion[]    @relation("PromotionFromClass")
+  promotionsTo          StudentPromotion[]    @relation("PromotionToClass")
 
   @@unique([name, academicYearId, tenantId])
   @@index([tenantId, academicYearId, gradeLevel])
@@ -766,12 +795,13 @@ model Student {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  classHistories StudentClassHistory[]
-  studentFees    StudentFee[]
-  ledgerEntries  FeeLedger[]
-  invoices       Invoice[]
-  discounts      StudentDiscount[]
-  promotions     StudentPromotion[]
+  classHistories    StudentClassHistory[]
+  attendanceRecords AttendanceRecord[]
+  studentFees       StudentFee[]
+  ledgerEntries     FeeLedger[]
+  invoices          Invoice[]
+  discounts         StudentDiscount[]
+  promotions        StudentPromotion[]
 
   @@unique([rollNumber, tenantId])
   @@unique([admissionNumber, tenantId])
@@ -819,10 +849,10 @@ model StudentPromotion {
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  student      Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  fromClass    Class?        @relation("PromotionFromClass", fields: [fromClassId], references: [id])
-  toClass      Class?        @relation("PromotionToClass", fields: [toClassId], references: [id])
-  academicYear AcademicYear  @relation(fields: [academicYearId], references: [id])
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  fromClass    Class?       @relation("PromotionFromClass", fields: [fromClassId], references: [id])
+  toClass      Class?       @relation("PromotionToClass", fields: [toClassId], references: [id])
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1263,6 +1293,85 @@ model Examination {
 
   @@index([tenantId, academicTermId])
   @@map("examinations")
+}
+
+// ─── MODELS ──────────────────────────────────────────────────────────────────
+
+model AttendanceSession {
+  id          String                  @id @default(cuid())
+  sessionDate DateTime                @db.Date
+  type        AttendanceSessionType   @default(DAILY)
+  status      AttendanceSessionStatus @default(DRAFT)
+  notes       String?
+
+  // Aggregates (maintained by service on mark / finalize)
+  totalStudents Int @default(0)
+  presentCount  Int @default(0)
+  absentCount   Int @default(0)
+  lateCount     Int @default(0)
+  excusedCount  Int @default(0)
+
+  classId String
+  class   Class  @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  academicYearId String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  academicTermId String?
+  academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id], onDelete: SetNull)
+
+  subjectId String?
+  // No FK relation to Subject intentionally — subject attendance is optional
+  // and can reference ClassSubject label instead.
+
+  takenById String?
+  takenAt   DateTime?
+
+  finalizedById String?
+  finalizedAt   DateTime?
+
+  lockedById String?
+  lockedAt   DateTime?
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  records AttendanceRecord[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([classId, sessionDate, type, subjectId])
+  @@index([tenantId, sessionDate])
+  @@index([tenantId, classId, sessionDate])
+  @@index([tenantId, academicYearId, sessionDate])
+  @@index([tenantId, academicTermId, sessionDate])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id         String           @id @default(cuid())
+  status     AttendanceStatus @default(PRESENT)
+  remark     String?
+  markedAt   DateTime         @default(now())
+  markedById String?
+
+  sessionId String
+  session   AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  studentId String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sessionId, studentId])
+  @@index([tenantId, studentId, status])
+  @@index([tenantId, studentId, createdAt])
+  @@map("attendance_records")
 }
 
 // =============================================================================
