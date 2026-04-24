@@ -1,146 +1,170 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+/**
+ * @service ClassesService
+ * @description Canonical class/grade catalogue with:
+ *   - Paginated listing + filters (gradeLevel, classType, stream, academicYearId)
+ *   - Promotion target resolution (next gradeLevel, same stream, REGULAR)
+ *   - Stream enumeration from Class.stream strings
+ *   - Streams-per-grade listing for UI navigation
+ */
+
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  ActivityAction,
+  ActivityEntityType,
+  ClassType,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { CreateClassDto } from './dto/create-class.dto';
-import { UpdateClassDto } from './dto/update-class.dto';
+import { ActivityService } from '../../common/activity/activity.service';
+import { CreateClassDto, UpdateClassDto } from './dto/class.dto';
+import { RequestActor } from '../academic-terms/academic-terms.service';
 
 export interface ClassesFilter {
   page?: number;
   limit?: number;
   search?: string;
-  academicYearId?: string;
   gradeLevel?: number;
-  classType?: string;
+  classType?: ClassType | string;
+  stream?: string;
+  academicYearId?: string;
 }
 
 @Injectable()
 export class ClassesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly activityService: ActivityService,
+  ) {}
 
-  async create(createClassDto: CreateClassDto, tenantId: string) {
-    const { 
-      name, 
-      displayName,
-      gradeLevel, 
-      section, 
-      capacity, 
-      classType,
-      stream,
-      language,
-      academicYearId,
-      classTeacherId
-    } = createClassDto;
-
-    // Verify academic year exists and belongs to tenant
-    const academicYear = await this.prisma.academicYear.findFirst({
-      where: { id: academicYearId, tenantId },
-    });
-
-    if (!academicYear) {
-      throw new NotFoundException('Academic year not found');
-    }
-
-    // Check if class name already exists in this academic year
-    const existingClass = await this.prisma.class.findUnique({
-      where: {
-        name_academicYearId_tenantId: {
-          name,
-          academicYearId,
-          tenantId,
-        },
-      },
-    });
-
-    if (existingClass) {
-      throw new ConflictException('Class with this name already exists in this academic year');
-    }
-
-    // Verify class teacher if provided
-    if (classTeacherId) {
-      const teacher = await this.prisma.teacher.findFirst({
-        where: { id: classTeacherId, tenantId },
-      });
-
-      if (!teacher) {
-        throw new NotFoundException('Class teacher not found');
-      }
-    }
-
-    return this.prisma.class.create({
-      data: {
-        name,
-        gradeLevel,
-        section,
-        capacity,
-        classType,
-        stream,
-        language,
-        academicYearId,
-        classTeacherId,
-        tenantId,
-      },
-      include: {
-        academicYear: true,
-        classTeacher: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true,
-                email: true,
-              },
-            },
-          },
-        },
-        _count: {
-          select: {
-            students: true,
-            subjects: true,
-          },
-        },
-      },
-    });
+  private actorName(a: RequestActor) {
+    return [a.firstName, a.lastName].filter(Boolean).join(' ') || 'System user';
   }
 
-  async findAll(tenantId: string, filters: ClassesFilter = {}) {
-    const { page = 1, limit = 10, search, academicYearId, gradeLevel, classType } = filters;
+  // ─────────────────────────── CREATE
+  async create(dto: CreateClassDto, actor: RequestActor) {
+    const year = await this.prisma.academicYear.findFirst({
+      where: { id: dto.academicYearId, tenantId: actor.tenantId },
+      select: {
+        id: true,
+        name: true,
+        isLocked: true,
+        streamsByGrade: true,
+      },
+    });
+    if (!year) throw new NotFoundException('Academic year not found');
+    if (year.isLocked) {
+      throw new BadRequestException(
+        'Cannot create class — academic year is locked',
+      );
+    }
+
+    // NEW: strict stream validation against year config — NO silent fallback
+    const { validateStreamForGrade } = await import(
+      '../academic-years/streams-config.helper.js'
+    );
+    validateStreamForGrade(
+      year.streamsByGrade as Record<string, string[]> | null,
+      dto.gradeLevel,
+      dto.stream?.trim() || null,
+    );
+
+    const dup = await this.prisma.class.findFirst({
+      where: {
+        tenantId: actor.tenantId,
+        academicYearId: dto.academicYearId,
+        name: dto.name.trim(),
+      },
+    });
+    if (dup) {
+      throw new BadRequestException(
+        `Class "${dto.name}" already exists in this academic year`,
+      );
+    }
+
+    if (dto.classTeacherId) {
+      const teacher = await this.prisma.teacher.findFirst({
+        where: { id: dto.classTeacherId, tenantId: actor.tenantId },
+      });
+      if (!teacher) throw new NotFoundException('Class teacher not found');
+    }
+
+    const created = await this.prisma.class.create({
+      data: {
+        tenantId: actor.tenantId,
+        academicYearId: dto.academicYearId,
+        name: dto.name.trim(),
+        displayName: dto.displayName?.trim(),
+        gradeLevel: dto.gradeLevel,
+        section: dto.section?.trim(),
+        capacity: dto.capacity ?? 40,
+        classType: dto.classType ?? ClassType.REGULAR,
+        stream: dto.stream?.trim() || null,
+        language: dto.language?.trim(),
+        curriculum: dto.curriculum?.trim(),
+        classTeacherId: dto.classTeacherId,
+      },
+      include: {
+        academicYear: { select: { id: true, name: true } },
+        classTeacher: {
+          include: { user: { select: { firstName: true, lastName: true } } },
+        },
+        _count: { select: { students: true, subjects: true } },
+      },
+    });
+
+    await this.activityService.log({
+      action: ActivityAction.CREATE,
+      entityType: ActivityEntityType.CLASS,
+      entityId: created.id,
+      tenantId: actor.tenantId,
+      userId: actor.id,
+      message: `${this.actorName(actor)} created class ${created.name}`,
+      metadata: {
+        academicYearId: dto.academicYearId,
+        gradeLevel: dto.gradeLevel,
+        stream: dto.stream,
+      },
+    });
+
+    return created;
+  }
+
+  // ─────────────────────────── READ (paginated)
+  async findAll(actor: RequestActor, filters: ClassesFilter = {}) {
+    const page = Math.max(1, filters.page ?? 1);
+    const limit = Math.min(200, Math.max(1, filters.limit ?? 20));
     const skip = (page - 1) * limit;
 
-    // Build where clause
-    const where: any = { tenantId };
+    const where: Prisma.ClassWhereInput = {
+      tenantId: actor.tenantId,
+      ...(filters.academicYearId && { academicYearId: filters.academicYearId }),
+      ...(filters.gradeLevel !== undefined && {
+        gradeLevel: filters.gradeLevel,
+      }),
+      ...(filters.classType && { classType: filters.classType as ClassType }),
+      ...(filters.stream && { stream: filters.stream }),
+      ...(filters.search && {
+        OR: [
+          { name: { contains: filters.search, mode: 'insensitive' } },
+          { displayName: { contains: filters.search, mode: 'insensitive' } },
+          { section: { contains: filters.search, mode: 'insensitive' } },
+          { stream: { contains: filters.search, mode: 'insensitive' } },
+        ],
+      }),
+    };
 
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { displayName: { contains: search, mode: 'insensitive' } },
-        { section: { contains: search, mode: 'insensitive' } },
-        { stream: { contains: search, mode: 'insensitive' } },
-      ];
-    }
-
-    if (academicYearId) {
-      where.academicYearId = academicYearId;
-    }
-
-    if (gradeLevel) {
-      where.gradeLevel = gradeLevel;
-    }
-
-    if (classType) {
-      where.classType = classType;
-    }
-
-    const [classes, total] = await Promise.all([
+    const [data, total] = await Promise.all([
       this.prisma.class.findMany({
         where,
         skip,
         take: limit,
-        orderBy: [
-          { gradeLevel: 'asc' },
-          { section: 'asc' },
-          { name: 'asc' },
-        ],
+        orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
         include: {
-          academicYear: true,
+          academicYear: { select: { id: true, name: true, isCurrent: true } },
           classTeacher: {
             include: {
               user: {
@@ -148,23 +172,19 @@ export class ClassesService {
                   firstName: true,
                   lastName: true,
                   email: true,
+                  avatar: true,
                 },
               },
             },
           },
-          _count: {
-            select: {
-              students: true,
-              subjects: true,
-            },
-          },
+          _count: { select: { students: true, subjects: true } },
         },
       }),
       this.prisma.class.count({ where }),
     ]);
 
     return {
-      data: classes,
+      data,
       meta: {
         total,
         page,
@@ -174,224 +194,289 @@ export class ClassesService {
     };
   }
 
-async findOne(id: string, tenantId: string) {
-  const classEntity = await this.prisma.class.findFirst({
-    where: { id, tenantId },
-    include: {
-      academicYear: true,
-      classTeacher: {
-        include: {
-          user: {
-            select: {
-              firstName: true,
-              lastName: true,
-              email: true,
-              avatar: true,            },
-          },
-        },
-      },
-      students: {
-        include: {
-          user: {
-            select: {
-              firstName: true,
-              lastName: true,
-              email: true,
-              avatar: true,
-            },
-          },
-        },
-        orderBy: [
-          { rollNumber: 'asc' },
-        ],
-      },
-      subjects: {
-        include: {
-          subject: true,
-          teacher: {
-            include: {
-              user: {
-                select: {
-                  firstName: true,
-                  lastName: true,
-                },
-              },
-            },
-          },
-        },
-        orderBy: [
-          { subject: { name: 'asc' } },
-        ],
-      },
-      _count: {
-        select: {
-          students: true,
-          subjects: true,
-        },
-      },
-    },
-  });
-
-  if (!classEntity) {
-    throw new NotFoundException('Class not found');
-  }
-
-  return classEntity;
-}
-
-
-  async update(id: string, updateClassDto: UpdateClassDto, tenantId: string) {
-    const classEntity = await this.prisma.class.findFirst({
-      where: { id, tenantId },
-    });
-
-    if (!classEntity) {
-      throw new NotFoundException('Class not found');
-    }
-
-    // Check name conflict if updating name
-    if (updateClassDto.name && updateClassDto.name !== classEntity.name) {
-      const existingClass = await this.prisma.class.findUnique({
-        where: {
-          name_academicYearId_tenantId: {
-            name: updateClassDto.name,
-            academicYearId: classEntity.academicYearId,
-            tenantId,
-          },
-        },
-      });
-
-      if (existingClass) {
-        throw new ConflictException('Class with this name already exists');
-      }
-    }
-
-    // Verify class teacher if provided
-    if (updateClassDto.classTeacherId) {
-      const teacher = await this.prisma.teacher.findFirst({
-        where: { id: updateClassDto.classTeacherId, tenantId },
-      });
-
-      if (!teacher) {
-        throw new NotFoundException('Class teacher not found');
-      }
-    }
-
-    return this.prisma.class.update({
-      where: { id },
-      data: updateClassDto,
+  async findOne(id: string, actor: RequestActor) {
+    const cls = await this.prisma.class.findFirst({
+      where: { id, tenantId: actor.tenantId },
       include: {
         academicYear: true,
         classTeacher: {
           include: {
             user: {
               select: {
+                id: true,
                 firstName: true,
                 lastName: true,
                 email: true,
+                phone: true,
+                avatar: true,
               },
             },
           },
         },
-        _count: {
+        subjects: {
+          include: {
+            subject: true,
+            teacher: {
+              include: {
+                user: {
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+        _count: { select: { students: true, subjects: true } },
+      },
+    });
+    if (!cls) throw new NotFoundException('Class not found');
+    return cls;
+  }
+
+  /** Students enrolled in a class. */
+  async findStudents(id: string, actor: RequestActor) {
+    const cls = await this.prisma.class.findFirst({
+      where: { id, tenantId: actor.tenantId },
+    });
+    if (!cls) throw new NotFoundException('Class not found');
+
+    return this.prisma.student.findMany({
+      where: { classId: id, tenantId: actor.tenantId },
+      include: {
+        user: {
           select: {
-            students: true,
-            subjects: true,
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            avatar: true,
+            gender: true,
+            dateOfBirth: true,
           },
         },
       },
+      orderBy: [{ rollNumber: 'asc' }],
     });
   }
 
-  async remove(id: string, tenantId: string) {
-    const classEntity = await this.prisma.class.findFirst({
-      where: { id, tenantId },
+  /** Lists distinct streams for a given academic year. */
+  async listStreams(actor: RequestActor, academicYearId?: string) {
+    const rows = await this.prisma.class.findMany({
+      where: {
+        tenantId: actor.tenantId,
+        academicYearId: academicYearId || undefined,
+        stream: { not: null },
+      },
+      select: {
+        stream: true,
+        gradeLevel: true,
+      },
+      distinct: ['stream', 'gradeLevel'],
+    });
+    // Group by stream → grade levels it appears in
+    const grouped: Record<string, number[]> = {};
+    for (const row of rows) {
+      if (!row.stream) continue;
+      if (!grouped[row.stream]) grouped[row.stream] = [];
+      grouped[row.stream].push(row.gradeLevel);
+    }
+    return Object.entries(grouped).map(([stream, grades]) => ({
+      stream,
+      gradeLevels: [...new Set(grades)].sort((a, b) => a - b),
+    }));
+  }
+
+  /** Classes sharing a stream label (useful for stream landing pages). */
+  async findByStream(
+    actor: RequestActor,
+    stream: string,
+    academicYearId?: string,
+  ) {
+    return this.prisma.class.findMany({
+      where: {
+        tenantId: actor.tenantId,
+        stream,
+        academicYearId: academicYearId || undefined,
+      },
       include: {
-        _count: {
-          select: {
-            students: true,
-          },
+        _count: { select: { students: true } },
+      },
+      orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
+    });
+  }
+
+  // ─────────────────────────── UPDATE
+  async update(id: string, dto: UpdateClassDto, actor: RequestActor) {
+    const current = await this.prisma.class.findFirst({
+      where: { id, tenantId: actor.tenantId },
+      include: {
+        academicYear: {
+          select: { id: true, isLocked: true, streamsByGrade: true },
         },
       },
     });
-
-    if (!classEntity) {
-      throw new NotFoundException('Class not found');
+    if (!current) throw new NotFoundException('Class not found');
+    if (current.academicYear.isLocked) {
+      throw new BadRequestException('Academic year is locked');
     }
 
-    if (classEntity._count.students > 0) {
-      throw new BadRequestException('Cannot delete class with enrolled students');
+    // If gradeLevel or stream is changing, revalidate against config
+    if (dto.gradeLevel !== undefined || dto.stream !== undefined) {
+      const { validateStreamForGrade } = await import(
+        '../academic-years/streams-config.helper.js'
+      );
+
+      validateStreamForGrade(
+        current.academicYear.streamsByGrade as Record<string, string[]> | null,
+        dto.gradeLevel ?? current.gradeLevel,
+        dto.stream !== undefined ? dto.stream?.trim() || null : current.stream,
+      );
     }
 
-    await this.prisma.class.delete({
+    if (dto.classTeacherId) {
+      const teacher = await this.prisma.teacher.findFirst({
+        where: { id: dto.classTeacherId, tenantId: actor.tenantId },
+      });
+      if (!teacher) throw new NotFoundException('Class teacher not found');
+    }
+
+    const updated = await this.prisma.class.update({
       where: { id },
+      data: {
+        name: dto.name?.trim(),
+        displayName: dto.displayName?.trim(),
+        gradeLevel: dto.gradeLevel,
+        section: dto.section?.trim(),
+        capacity: dto.capacity,
+        classType: dto.classType,
+        stream:
+          dto.stream !== undefined ? dto.stream?.trim() || null : undefined,
+        language: dto.language?.trim(),
+        curriculum: dto.curriculum?.trim(),
+        classTeacherId: dto.classTeacherId,
+      },
+      include: {
+        academicYear: { select: { id: true, name: true } },
+        _count: { select: { students: true } },
+      },
+    });
+
+    await this.activityService.log({
+      action: ActivityAction.UPDATE,
+      entityType: ActivityEntityType.CLASS,
+      entityId: id,
+      tenantId: actor.tenantId,
+      userId: actor.id,
+      message: `${this.actorName(actor)} updated class ${updated.name}`,
+    });
+
+    return updated;
+  }
+  // ─────────────────────────── DELETE
+  async remove(id: string, actor: RequestActor) {
+    const cls = await this.prisma.class.findFirst({
+      where: { id, tenantId: actor.tenantId },
+      include: { _count: { select: { students: true, subjects: true } } },
+    });
+    if (!cls) throw new NotFoundException('Class not found');
+
+    if (cls._count.students > 0) {
+      throw new BadRequestException(
+        `Cannot delete class "${cls.name}" — ${cls._count.students} students are enrolled`,
+      );
+    }
+
+    await this.prisma.class.delete({ where: { id } });
+
+    await this.activityService.log({
+      action: ActivityAction.DELETE,
+      entityType: ActivityEntityType.CLASS,
+      entityId: id,
+      tenantId: actor.tenantId,
+      userId: actor.id,
+      message: `${this.actorName(actor)} deleted class ${cls.name}`,
     });
 
     return { message: 'Class deleted successfully' };
   }
 
-  async getClassesByAcademicYear(academicYearId: string, tenantId: string) {
-    return this.prisma.class.findMany({
-      where: { academicYearId, tenantId },
-      include: {
-        classTeacher: {
-          include: {
-            user: {
-              select: {
-                firstName: true,
-                lastName: true,
-              },
-            },
-          },
-        },
-        _count: {
-          select: {
-            students: true,
-          },
-        },
-      },
-      orderBy: [
-        { gradeLevel: 'asc' },
-        { section: 'asc' },
-      ],
+  async getStreamsForGrade(
+    tenantId: string,
+    academicYearId: string,
+    gradeLevel: number,
+  ) {
+    const year = await this.prisma.academicYear.findFirst({
+      where: { id: academicYearId, tenantId },
+      select: { streamsByGrade: true },
     });
+    if (!year) throw new NotFoundException('Academic year not found');
+
+    const config =
+      (year.streamsByGrade as Record<string, string[]> | null) ?? {};
+    const key = String(gradeLevel);
+    const entry = config[key];
+
+    if (entry === undefined) {
+      return {
+        configured: false,
+        streamless: false,
+        allowedStreams: [],
+        message: `Streams not configured for Grade ${gradeLevel}. Classes at this grade will be created without a stream.`,
+      };
+    }
+    if (entry.length === 0) {
+      return {
+        configured: true,
+        streamless: true,
+        allowedStreams: [],
+        message: `Grade ${gradeLevel} is streamless in this academic year.`,
+      };
+    }
+    return {
+      configured: true,
+      streamless: false,
+      allowedStreams: entry,
+      message: `Allowed streams for Grade ${gradeLevel}: ${entry.join(', ')}`,
+    };
   }
 
-  async getClassStats(tenantId: string) {
-    const [
-      totalClasses,
-      classesByGrade,
-      classesByType,
-      totalCapacity,
-      totalStudents,
-    ] = await Promise.all([
-      this.prisma.class.count({ where: { tenantId } }),
-      this.prisma.class.groupBy({
-        by: ['gradeLevel'],
-        where: { tenantId },
-        _count: true,
-        orderBy: { gradeLevel: 'asc' },
-      }),
-      this.prisma.class.groupBy({
-        by: ['classType'],
-        where: { tenantId },
-        _count: true,
-      }),
-      this.prisma.class.aggregate({
-        where: { tenantId },
-        _sum: { capacity: true },
-      }),
-      this.prisma.student.count({ where: { tenantId, academicStatus: 'ACTIVE' } }),
-    ]);
+  /**
+   * Resolve the default destination class for promotion:
+   *   same stream if present, gradeLevel+1, classType=REGULAR,
+   *   restricted to the target academic year.
+   */
+  async resolvePromotionTarget(
+    tenantId: string,
+    fromClassId: string,
+    targetAcademicYearId: string,
+  ) {
+    const from = await this.prisma.class.findFirst({
+      where: { id: fromClassId, tenantId },
+    });
+    if (!from) return null;
+    const nextGrade = from.gradeLevel + 1;
 
-    return {
-      totalClasses,
-      classesByGrade,
-      classesByType,
-      totalCapacity: totalCapacity._sum.capacity || 0,
-      totalStudents,
-      utilizationRate: totalCapacity._sum.capacity ? 
-        Math.round((totalStudents / totalCapacity._sum.capacity) * 100) : 0,
-    };
+    const preferred = await this.prisma.class.findFirst({
+      where: {
+        tenantId,
+        academicYearId: targetAcademicYearId,
+        gradeLevel: nextGrade,
+        classType: ClassType.REGULAR,
+        ...(from.stream ? { stream: from.stream } : {}),
+      },
+    });
+    if (preferred) return preferred;
+
+    return this.prisma.class.findFirst({
+      where: {
+        tenantId,
+        academicYearId: targetAcademicYearId,
+        gradeLevel: nextGrade,
+        classType: ClassType.REGULAR,
+      },
+    });
   }
 }
