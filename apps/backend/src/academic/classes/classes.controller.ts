@@ -1,110 +1,132 @@
+/**
+ * @controller ClassesController
+ * @description REST endpoints for classes. Exposes stream drill-downs and
+ *   per-class student listings to support UI navigation:
+ *     /academic/classes?gradeLevel=3&stream=Science  — list by stream
+ *     /academic/classes/streams                       — enumerate streams
+ *     /academic/classes/:id                           — class detail
+ *     /academic/classes/:id/students                  — students in class
+ */
+
 import {
-  Controller,
-  Get,
-  Post,
   Body,
-  Patch,
-  Param,
+  Controller,
   Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
   Query,
   UseGuards,
-  ParseIntPipe,
-  DefaultValuePipe,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
-import { ClassesService } from './classes.service';
-import { CreateClassDto } from './dto/create-class.dto';
-import { UpdateClassDto } from './dto/update-class.dto';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+import { ClassesService } from './classes.service';
+import { CreateClassDto, UpdateClassDto } from './dto/class.dto';
 
 @ApiTags('Classes')
-@Controller('classes')
+@Controller('academic/classes')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @ApiBearerAuth()
 export class ClassesController {
-  constructor(private readonly classesService: ClassesService) {}
-
-  @Post()
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Create new class' })
-  @ApiResponse({ status: 201, description: 'Class created successfully' })
-  create(@Body() createClassDto: CreateClassDto, @CurrentUser() user: any) {
-    return this.classesService.create(createClassDto, user.tenantId);
-  }
+  constructor(private readonly service: ClassesService) {}
 
   @Get()
-  @Roles('Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'Get all classes with pagination and filters' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiQuery({ name: 'search', required: false, type: String })
-  @ApiQuery({ name: 'academicYearId', required: false, type: String })
-  @ApiQuery({ name: 'gradeLevel', required: false, type: Number })
-  @ApiQuery({ name: 'classType', required: false, type: String })
-  @ApiResponse({ status: 200, description: 'Classes retrieved successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher', 'Student')
   findAll(
     @CurrentUser() user: any,
-    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
-    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
     @Query('search') search?: string,
-    @Query('academicYearId') academicYearId?: string,
-    @Query('gradeLevel', new DefaultValuePipe(0), ParseIntPipe) gradeLevel?: number,
+    @Query('gradeLevel') gradeLevel?: string,
     @Query('classType') classType?: string,
+    @Query('stream') stream?: string,
+    @Query('academicYearId') academicYearId?: string,
   ) {
-    return this.classesService.findAll(user.tenantId, {
-      page,
-      limit,
+    return this.service.findAll(user, {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 20,
       search,
-      academicYearId,
-      gradeLevel: gradeLevel || undefined,
+      gradeLevel: gradeLevel ? Number(gradeLevel) : undefined,
       classType,
+      stream,
+      academicYearId,
     });
   }
 
-  @Get('stats')
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Get class statistics' })
-  @ApiResponse({ status: 200, description: 'Class statistics retrieved successfully' })
-  getStats(@CurrentUser() user: any) {
-    return this.classesService.getClassStats(user.tenantId);
+  @Get('streams')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
+  @ApiOperation({ summary: 'Enumerate distinct streams (optionally per year)' })
+  streams(
+    @CurrentUser() user: any,
+    @Query('academicYearId') academicYearId?: string,
+  ) {
+    return this.service.listStreams(user, academicYearId);
   }
 
-  @Get('academic-year/:academicYearId')
-  @Roles('Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'Get classes by academic year' })
-  @ApiResponse({ status: 200, description: 'Classes retrieved successfully' })
-  getClassesByAcademicYear(@Param('academicYearId') academicYearId: string, @CurrentUser() user: any) {
-    return this.classesService.getClassesByAcademicYear(academicYearId, user.tenantId);
+  @Get('by-stream/:stream')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
+  @ApiOperation({ summary: 'List classes belonging to a given stream label' })
+  byStream(
+    @Param('stream') stream: string,
+    @CurrentUser() user: any,
+    @Query('academicYearId') academicYearId?: string,
+  ) {
+    return this.service.findByStream(user, stream, academicYearId);
+  }
+
+  @Get('streams-for-grade')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
+  @ApiOperation({
+    summary: 'Get allowed streams for a given academic year + grade level',
+  })
+  streamsForGrade(
+    @CurrentUser() user: any,
+    @Query('academicYearId') academicYearId: string,
+    @Query('gradeLevel') gradeLevel: string,
+  ) {
+    return this.service.getStreamsForGrade(
+      user.tenantId,
+      academicYearId,
+      Number(gradeLevel),
+    );
   }
 
   @Get(':id')
-  @Roles('Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'Get class by ID' })
-  @ApiResponse({ status: 200, description: 'Class retrieved successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher', 'Student')
   findOne(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.classesService.findOne(id, user.tenantId);
+    return this.service.findOne(id, user);
+  }
+
+  @Get(':id/students')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
+  @ApiOperation({ summary: 'Roster of students enrolled in the class' })
+  students(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.findStudents(id, user);
+  }
+
+  @Post()
+  @Roles('SuperAdmin', 'Admin', 'Principal')
+  create(@Body() dto: CreateClassDto, @CurrentUser() user: any) {
+    return this.service.create(dto, user);
   }
 
   @Patch(':id')
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Update class' })
-  @ApiResponse({ status: 200, description: 'Class updated successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   update(
     @Param('id') id: string,
-    @Body() updateClassDto: UpdateClassDto,
+    @Body() dto: UpdateClassDto,
     @CurrentUser() user: any,
   ) {
-    return this.classesService.update(id, updateClassDto, user.tenantId);
+    return this.service.update(id, dto, user);
   }
 
   @Delete(':id')
-  @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Delete class' })
-  @ApiResponse({ status: 200, description: 'Class deleted successfully' })
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   remove(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.classesService.remove(id, user.tenantId);
+    return this.service.remove(id, user);
   }
 }
