@@ -1,10 +1,6 @@
 /**
  * @service StudentClassHistoryService
  * @description Append-only ledger of every class a student has belonged to.
- *   Invariants:
- *     - EXACTLY ONE row per student has isCurrent=true at any given time.
- *     - Creating a new "open" row auto-closes the previous one.
- *     - Syncs Student.classId to match the open row (denormalised pointer).
  */
 
 import {
@@ -19,7 +15,13 @@ import {
   CreateStudentClassHistoryDto,
   UpdateStudentClassHistoryDto,
 } from './dto/student-class-history.dto';
-import { RequestActor } from '../academic-terms/academic-terms.service';
+
+export interface RequestActor {
+  id: string;
+  tenantId: string;
+  firstName?: string;
+  lastName?: string;
+}
 
 export interface HistoryListFilters {
   studentId?: string;
@@ -39,8 +41,7 @@ export class StudentClassHistoryService {
   }
 
   /**
-   * Create a new class-history entry.
-   * When `tx` is supplied, the call is wrapped in the caller's transaction.
+   * Create a new class-history entry. When `tx` is supplied, runs in caller's tx.
    */
   async createEntry(
     tenantId: string,
@@ -56,8 +57,24 @@ export class StudentClassHistoryService {
 
       const klass = await client.class.findFirst({
         where: { id: dto.classId, tenantId },
+        include: { streams: { select: { id: true } } },
       });
       if (!klass) throw new NotFoundException('Class not found');
+
+      // Resolve streamId: explicit DTO value first, fall back to class's first stream
+      let streamId: string | null = dto.streamId ?? null;
+      if (streamId) {
+        const owned = await client.stream.findFirst({
+          where: { id: streamId, classId: dto.classId, tenantId },
+        });
+        if (!owned) {
+          throw new BadRequestException(
+            `Stream ${streamId} does not belong to class ${klass.name}`,
+          );
+        }
+      } else if (klass.streams.length === 1) {
+        streamId = klass.streams[0].id;
+      }
 
       const start = new Date(dto.startDate);
       const end = dto.endDate ? new Date(dto.endDate) : null;
@@ -79,7 +96,7 @@ export class StudentClassHistoryService {
           studentId: dto.studentId,
           classId: dto.classId,
           academicYearId: dto.academicYearId,
-          stream: dto.stream ?? klass.stream ?? null,
+          streamId,
           startDate: start,
           endDate: end,
           isCurrent: dto.isCurrent ?? true,
@@ -87,11 +104,14 @@ export class StudentClassHistoryService {
         },
       });
 
-      // Sync denormalised pointer
+      // Sync denormalised pointers
       if (dto.isCurrent !== false && !end) {
         await client.student.update({
           where: { id: dto.studentId },
-          data: { classId: dto.classId },
+          data: {
+            classId: dto.classId,
+            streamId: streamId ?? null,
+          },
         });
       }
 
@@ -137,7 +157,13 @@ export class StudentClassHistoryService {
             },
           },
         },
-        class: { select: { id: true, name: true, gradeLevel: true } },
+        class: {
+          select: {
+            id: true,
+            name: true,
+            grade: { select: { id: true, name: true, levelOrder: true } },
+          },
+        },
         academicYear: { select: { id: true, name: true } },
       },
       orderBy: [{ studentId: 'asc' }, { startDate: 'desc' }],
@@ -152,8 +178,8 @@ export class StudentClassHistoryService {
           select: {
             id: true,
             name: true,
-            gradeLevel: true,
-            stream: true,
+            grade: { select: { id: true, name: true, levelOrder: true } },
+            streams: { select: { id: true, name: true } },
           },
         },
         academicYear: { select: { id: true, name: true } },
@@ -166,7 +192,11 @@ export class StudentClassHistoryService {
     return this.prisma.studentClassHistory.findFirst({
       where: { tenantId, studentId, isCurrent: true },
       include: {
-        class: true,
+        class: {
+          include: {
+            grade: { select: { id: true, name: true, levelOrder: true } },
+          },
+        },
         academicYear: { select: { id: true, name: true } },
       },
     });
@@ -188,7 +218,7 @@ export class StudentClassHistoryService {
       data: {
         classId: dto.classId,
         academicYearId: dto.academicYearId,
-        stream: dto.stream,
+        streamId: dto.streamId ?? undefined,
         startDate: dto.startDate ? new Date(dto.startDate) : undefined,
         endDate: dto.endDate ? new Date(dto.endDate) : undefined,
         isCurrent: dto.isCurrent,
@@ -209,31 +239,34 @@ export class StudentClassHistoryService {
   }
 
   /**
-   * Re-sync Student.classId from the open history row for every student.
-   * Useful when imports or manual DB fixes have drifted the denorm pointer.
+   * Re-sync Student.classId / Student.streamId from the open history row for
+   * every student. Useful when imports or DB fixes drift the denorm pointers.
    */
   async audit(tenantId: string) {
     const openRows = await this.prisma.studentClassHistory.findMany({
       where: { tenantId, isCurrent: true },
-      select: { studentId: true, classId: true },
+      select: { studentId: true, classId: true, streamId: true },
     });
-    const fixes: Array<{ studentId: string; from: string | null; to: string }> =
-      [];
+    const fixes: Array<{
+      studentId: string;
+      from: { classId: string | null; streamId: string | null };
+      to: { classId: string; streamId: string | null };
+    }> = [];
 
     for (const r of openRows) {
       const stu = await this.prisma.student.findUnique({
         where: { id: r.studentId },
-        select: { classId: true },
+        select: { classId: true, streamId: true },
       });
-      if (stu && stu.classId !== r.classId) {
+      if (stu && (stu.classId !== r.classId || stu.streamId !== r.streamId)) {
         fixes.push({
           studentId: r.studentId,
-          from: stu.classId,
-          to: r.classId,
+          from: { classId: stu.classId, streamId: stu.streamId },
+          to: { classId: r.classId, streamId: r.streamId },
         });
         await this.prisma.student.update({
           where: { id: r.studentId },
-          data: { classId: r.classId },
+          data: { classId: r.classId, streamId: r.streamId },
         });
       }
     }
