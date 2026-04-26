@@ -1,6 +1,24 @@
 // =============================================================================
-// PRISMA SCHEMA — Acadchestra
-// Learn more: https://pris.ly/d/prisma-schema
+// PRISMA SCHEMA — Acadchestra v2
+//
+// @description Fully normalized, curriculum-agnostic, policy-driven schema.
+//   Replaces the legacy schema. See docs/FLAWS.md for the before-and-after audit
+//   and docs/README.md for the design principles.
+//
+// Key changes vs v1:
+//   - NEW:  CurriculumTemplate, GradeTemplate, Curriculum, Grade, Stream
+//   - NEW:  Guardian, StudentGuardian (M:N with relationship metadata)
+//   - NEW:  AdmissionCounter (race-safe sequential numbering)
+//   - NEW:  Config, Policy (dynamic per-tenant rules)
+//   - NEW:  FeePaymentRule (term payment % schedule)
+//   - NEW:  EmailTemplate, EmailDelivery (auditable email)
+//   - REF:  Class.gradeId  (was: gradeLevel:Int)
+//   - REF:  Class.streams[]  (was: stream:String)
+//   - REF:  FeeStructure.gradeId/classId/streamId  (was: gradeLevel:Int)
+//   - REF:  Student.userId  is now OPTIONAL
+//   - DEL:  Tenant.gradeStructure, Tenant.feeConfiguration
+//   - DEL:  AcademicYear.streamsByGrade
+//   - DEL:  50+ columns from TenantSettings → moved to Config
 // =============================================================================
 
 generator client {
@@ -34,6 +52,7 @@ enum Gender {
   MALE
   FEMALE
   OTHER
+  PREFER_NOT_TO_SAY
 }
 
 enum AcademicYearStatus {
@@ -43,27 +62,11 @@ enum AcademicYearStatus {
   LOCKED
 }
 
-enum CalendarPhase {
-  SETUP // Year created, terms defined, no teaching yet
-  TEACHING // Normal term in progress, instruction active
-  EXAMS // Exam window — academic structure locked
-  BREAK // Holiday / mid-term break — teaching paused
-  PROMOTION_WINDOW // Year-end promotion window — promotions allowed
-  ARCHIVED // Year ended and archived
-}
-
 enum AcademicPeriodType {
   TERM
   HOLIDAY
   EXAM_WEEK
   MID_TERM_BREAK
-}
-
-enum AcademicProgressStatus {
-  NOT_STARTED
-  IN_PROGRESS
-  HOLIDAY
-  COMPLETED
 }
 
 enum ClassType {
@@ -73,6 +76,7 @@ enum ClassType {
   BILINGUAL
   VOCATIONAL
   PREP
+  REMEDIAL
 }
 
 enum SubjectCategory {
@@ -83,6 +87,7 @@ enum SubjectCategory {
   ARTS
   SPORTS
   VOCATIONAL
+  TECHNICAL
 }
 
 enum StudentStatus {
@@ -91,6 +96,7 @@ enum StudentStatus {
   GRADUATED
   TRANSFERRED
   DROPPED
+  SUSPENDED
 }
 
 enum EmploymentStatus {
@@ -98,6 +104,7 @@ enum EmploymentStatus {
   INACTIVE
   TERMINATED
   RESIGNED
+  ON_LEAVE
 }
 
 enum ExamType {
@@ -107,6 +114,7 @@ enum ExamType {
   ASSESSMENT
   FINAL_EXAM
   ENTRANCE
+  MOCK
 }
 
 enum PromotionStatus {
@@ -138,10 +146,13 @@ enum FeeCategory {
   OTHER
 }
 
+// Scope of a fee structure — most specific wins during resolution.
 enum FeeStructureScope {
   SCHOOL_WIDE
-  CLASS_SPECIFIC
+  CURRICULUM_WIDE
   GRADE_SPECIFIC
+  CLASS_SPECIFIC
+  STREAM_SPECIFIC
 }
 
 enum FeeStatus {
@@ -232,6 +243,9 @@ enum NotificationType {
   ACADEMIC_YEAR_ENDING
   PROMOTION_READY
   ARREARS_ALERT
+  ONBOARDING_REMINDER
+  GUARDIAN_INVITED
+  EMAIL_FAILED
   SYSTEM
 }
 
@@ -265,54 +279,73 @@ enum ActivityAction {
   DISCOUNT
   FINANCIAL_LOCK
   ACADEMIC_LOCK
+  ONBOARDING_STEP
+  CONFIG_CHANGE
+  CURRICULUM_ADOPTED
+  GUARDIAN_LINKED
+  ADMISSION_ISSUED
+  EMAIL_SENT
 }
 
 enum ActivityEntityType {
   TENANT
   TENANT_SETTINGS
   USER
+  ROLE
+  CONFIG
+  POLICY
   ACADEMIC_YEAR
   ACADEMIC_TERM
   ACADEMIC_PERIOD
+  CURRICULUM
+  CURRICULUM_TEMPLATE
+  GRADE
   CLASS
+  STREAM
   STUDENT
   STUDENT_CLASS_HISTORY
+  GUARDIAN
+  STUDENT_GUARDIAN
+  ADMISSION_COUNTER
   TEACHER
   FEE_STRUCTURE
   FEE_STRUCTURE_VERSION
+  FEE_PAYMENT_RULE
   STUDENT_FEE
   FEE_PAYMENT
   FEE_COMPONENT
   FEE_ALLOCATION
-  EXAMINATION
-  ROLE
-  FEE_STRUCTURE_LEVEL
   FEE_LEDGER
+  EXAMINATION
+  FEE_STRUCTURE_LEVEL
   TERM_ACTIVATION_BILLING
   INVOICE
   STUDENT_DISCOUNT
   PROMOTION
-  NOTIFICATION
   PROMOTION_PLAN
   PROMOTION_PLAN_ENTRY
   ATTENDANCE_SESSION
   ATTENDANCE_RECORD
+  NOTIFICATION
+  EMAIL_TEMPLATE
+  EMAIL_DELIVERY
+  ONBOARDING
 }
 
 enum PromotionPlanStatus {
-  DRAFT // Generated, not reviewed
-  REVIEWING // Admin is editing mappings
-  APPROVED // Validated, ready to execute
-  EXECUTING // In progress
-  EXECUTED // Committed
+  DRAFT
+  REVIEWING
+  APPROVED
+  EXECUTING
+  EXECUTED
   CANCELLED
 }
 
 enum PromotionStrategy {
-  PRESERVE_STREAM // Keep same stream in target grade
-  BALANCED_DISTRIBUTION // Spread students across streams
-  CUSTOM_MAPPING // Fully manual — no strategy inference
-  GRADE_ONLY // Target year has no streams — grade++ only
+  PRESERVE_STREAM
+  BALANCED_DISTRIBUTION
+  CUSTOM_MAPPING
+  GRADE_ONLY
 }
 
 enum PromotionPlanEntryStatus {
@@ -335,16 +368,54 @@ enum AttendanceStatus {
 }
 
 enum AttendanceSessionStatus {
-  DRAFT // Register opened but not yet finalized
-  FINALIZED // Teacher submitted
-  LOCKED // Admin-locked (no further edits)
+  DRAFT
+  FINALIZED
+  LOCKED
 }
 
 enum AttendanceSessionType {
-  DAILY // Whole-day class register (most common)
-  SUBJECT // Subject-period based (optional)
-  AM // Morning only
-  PM // Afternoon only
+  DAILY
+  SUBJECT
+  AM
+  PM
+}
+
+enum AdmissionStrategy {
+  SEQUENTIAL // 0001
+  YEAR_PREFIXED // 20260001
+  CUSTOM_PREFIXED // GW0001
+}
+
+enum GuardianRelationship {
+  MOTHER
+  FATHER
+  STEP_MOTHER
+  STEP_FATHER
+  GUARDIAN
+  GRANDMOTHER
+  GRANDFATHER
+  UNCLE
+  AUNT
+  SIBLING
+  OTHER
+}
+
+enum OnboardingStep {
+  CURRICULUM
+  ACADEMIC_YEAR
+  CONFIGURATION
+  FIRST_CLASS
+  FIRST_STUDENT
+  FEE_STRUCTURE
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  BOUNCED
+  FAILED
+  COMPLAINED
 }
 
 // =============================================================================
@@ -366,41 +437,65 @@ model Tenant {
   isActive    Boolean  @default(true)
   maxStudents Int      @default(100)
 
-  termStructure    TermStructure @default(THREE_TERMS)
-  gradeStructure   Json?
-  feeConfiguration Json?
+  // Default term structure for new academic years
+  termStructure TermStructure @default(THREE_TERMS)
+
+  // Onboarding tracking
+  isOnboarded         Boolean   @default(false)
+  onboardedAt         DateTime?
+  onboardingStartedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  settings              TenantSettings?
-  users                 User[]
-  roles                 Role[]
+  // ─── Relations ────────────────────────────────────────────────────────────
+  settings          TenantSettings?
+  configs           Config[]
+  policies          Policy[]
+  admissionCounter  AdmissionCounter?
+
+  users    User[]
+  roles    Role[]
+  teachers Teacher[]
+
+  curriculums           Curriculum[]
+  grades                Grade[]
   academicYears         AcademicYear[]
   academicTerms         AcademicTerm[]
   academicPeriods       AcademicPeriod[]
   classes               Class[]
+  streams               Stream[]
   subjects              Subject[]
   students              Student[]
+  guardians             Guardian[]
+  studentGuardians      StudentGuardian[]
   studentClassHistories StudentClassHistory[]
-  teachers              Teacher[]
-  feeStructures         FeeStructure[]
-  feeStructureVersions  FeeStructureVersion[]
-  studentFees           StudentFee[]
-  feePayments           FeePayment[]
-  examinations          Examination[]
-  activityLogs          ActivityLog[]
-  feeStructureLevels    FeeStructureLevel[]
-  feeLedgerEntries      FeeLedger[]
-  invoices              Invoice[]
-  studentDiscounts      StudentDiscount[]
-  promotions            StudentPromotion[]
-  notifications         Notification[]
-  reportSnapshots       ReportSnapshot[]
-  promotionPlans        PromotionPlan[]
-  attendanceSessions    AttendanceSession[]
-  attendanceRecords     AttendanceRecord[]
 
+  feeStructures        FeeStructure[]
+  feeStructureVersions FeeStructureVersion[]
+  feeStructureLevels   FeeStructureLevel[]
+  feePaymentRules      FeePaymentRule[]
+  studentFees          StudentFee[]
+  feePayments          FeePayment[]
+  feeLedgerEntries     FeeLedger[]
+  invoices             Invoice[]
+  studentDiscounts     StudentDiscount[]
+
+  examinations    Examination[]
+  promotions      StudentPromotion[]
+  promotionPlans  PromotionPlan[]
+
+  attendanceSessions AttendanceSession[]
+  attendanceRecords  AttendanceRecord[]
+
+  notifications   Notification[]
+  emailTemplates  EmailTemplate[]
+  emailDeliveries EmailDelivery[]
+
+  activityLogs    ActivityLog[]
+  reportSnapshots ReportSnapshot[]
+
+  @@index([isActive, planType])
   @@map("tenants")
 }
 
@@ -408,6 +503,9 @@ model Tenant {
 // USERS & RBAC
 // =============================================================================
 
+// `User` is a LOGIN IDENTITY only. Profile data (firstName, etc) is duplicated
+// onto Student / Teacher / Guardian when those entities exist without a User
+// (lower-primary kids, parents who don't want a portal).
 model User {
   id       String  @id @default(cuid())
   email    String  @unique
@@ -423,6 +521,7 @@ model User {
 
   isEmailVerified    Boolean   @default(false)
   isTwoFactorEnabled Boolean   @default(false)
+  mustChangePassword Boolean   @default(false) // set true on temp password issuance
   lastLogin          DateTime?
   isActive           Boolean   @default(true)
 
@@ -435,6 +534,7 @@ model User {
   userRoles     UserRole[]
   student       Student?
   teacher       Teacher?
+  guardian      Guardian?
   activityLogs  ActivityLog[]
   notifications Notification[]
 
@@ -500,6 +600,177 @@ model RolePermission {
 }
 
 // =============================================================================
+// SETTINGS — I18N + Branding ONLY (typed, stable, queried-every-request)
+// =============================================================================
+
+model TenantSettings {
+  id       String @id @default(cuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // ─── Localization ────────────────────────────────────────────────
+  currency         String           @default("KES")
+  currencySymbol   String           @default("KSh")
+  currencyPosition CurrencyPosition @default(BEFORE)
+  currencyDecimals Int              @default(2)
+  timezone         String           @default("Africa/Nairobi")
+  locale           String           @default("en-KE")
+  dateFormat       String           @default("DD/MM/YYYY")
+  timeFormat       TimeFormat       @default(H24)
+  firstDayOfWeek   Int              @default(1)
+
+  // ─── Branding ────────────────────────────────────────────────────
+  logoUrl        String?
+  faviconUrl     String?
+  primaryColor   String  @default("#3b82f6")
+  secondaryColor String  @default("#8b5cf6")
+  brandTagline   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("tenant_settings")
+}
+
+// =============================================================================
+// CONFIG ENGINE — flexible per-category rules
+// =============================================================================
+
+model Config {
+  id          String   @id @default(cuid())
+  tenantId    String
+  category    String // 'academic' | 'student' | 'guardian' | 'fee' | 'security' | 'comms' | 'features'
+  key         String
+  value       Json
+  description String?
+  isLocked    Boolean  @default(false) // if true, only SuperAdmin can change
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, category, key])
+  @@index([tenantId, category])
+  @@map("configs")
+}
+
+model Policy {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  category    String
+  description String?
+  rules       Json // expression tree (JSONLogic / custom DSL)
+  isActive    Boolean  @default(true)
+  priority    Int      @default(100)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@index([tenantId, category, isActive])
+  @@map("policies")
+}
+
+// =============================================================================
+// CURRICULUM TEMPLATES (system-wide, SuperAdmin)
+// =============================================================================
+
+model CurriculumTemplate {
+  id          String  @id @default(cuid())
+  name        String  @unique // "CBC", "British", "IGCSE", "K-8-4-4", "University Semester"
+  code        String  @unique // "cbc", "british", "igcse"
+  country     String? // e.g. "KE", "GB"
+  description String?
+  isPublished Boolean @default(true)
+
+  defaultTermStructure TermStructure?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  grades      GradeTemplate[]
+  curriculums Curriculum[]
+
+  @@map("curriculum_templates")
+}
+
+model GradeTemplate {
+  id          String  @id @default(cuid())
+  name        String // "PP1", "Grade 1", "Form 3"
+  displayName String? // "Pre-Primary 1"
+  levelOrder  Int
+
+  curriculumTemplateId String
+  curriculumTemplate   CurriculumTemplate @relation(fields: [curriculumTemplateId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([curriculumTemplateId, levelOrder])
+  @@unique([curriculumTemplateId, name])
+  @@map("grade_templates")
+}
+
+// =============================================================================
+// CURRICULUM (per-tenant, optionally forked from a template)
+// =============================================================================
+
+model Curriculum {
+  id          String  @id @default(cuid())
+  name        String // "Greenwood CBC"
+  code        String? // optional shortcode
+  description String?
+  isActive    Boolean @default(true)
+  isDefault   Boolean @default(false)
+
+  // Provenance — null means built from scratch
+  templateId String?
+  template   CurriculumTemplate? @relation(fields: [templateId], references: [id])
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  grades        Grade[]
+  feeStructures FeeStructure[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, isActive])
+  @@map("curriculums")
+}
+
+model Grade {
+  id          String  @id @default(cuid())
+  name        String // "PP1", "Grade 1", "Form 3"
+  displayName String? // "Pre-Primary 1"
+  levelOrder  Int // promotion ordering only
+
+  curriculumId String
+  curriculum   Curriculum @relation(fields: [curriculumId], references: [id], onDelete: Cascade)
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  classes       Class[]
+  feeStructures FeeStructure[]
+  subjects      Subject[]
+
+  @@unique([tenantId, curriculumId, levelOrder])
+  @@unique([tenantId, curriculumId, name])
+  @@index([tenantId, curriculumId])
+  @@map("grades")
+}
+
+// =============================================================================
 // ACADEMIC STRUCTURE
 // =============================================================================
 
@@ -520,8 +791,6 @@ model AcademicYear {
   isFinanciallyLocked Boolean   @default(false)
   financiallyLockedAt DateTime?
   financialLockReason String?
-
-  streamsByGrade Json? @default("{}")
 
   promotionWindowStart DateTime?
   promotionWindowEnd   DateTime?
@@ -578,6 +847,7 @@ model AcademicTerm {
   updatedAt DateTime @updatedAt
 
   feeStructures      FeeStructure[]
+  feePaymentRules    FeePaymentRule[]
   attendanceSessions AttendanceSession[]
   examinations       Examination[]
   invoices           Invoice[]
@@ -615,99 +885,24 @@ model AcademicPeriod {
   @@map("academic_periods")
 }
 
-model PromotionPlan {
-  id       String              @id @default(cuid())
-  name     String
-  status   PromotionPlanStatus @default(DRAFT)
-  strategy PromotionStrategy   @default(PRESERVE_STREAM)
-
-  fromAcademicYearId String
-  toAcademicYearId   String
-
-  totalStudents      Int @default(0)
-  plannedPromotions  Int @default(0)
-  plannedGraduations Int @default(0)
-  plannedRetentions  Int @default(0)
-  conflictsCount     Int @default(0)
-  warningsCount      Int @default(0)
-
-  notes   String?
-  summary Json? // warnings, stats, strategy snapshot
-
-  createdById   String?
-  approvedById  String?
-  approvedAt    DateTime?
-  executedById  String?
-  executedAt    DateTime?
-  cancelledById String?
-  cancelledAt   DateTime?
-
-  tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  entries PromotionPlanEntry[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([tenantId, status])
-  @@index([tenantId, toAcademicYearId])
-  @@map("promotion_plans")
-}
-
-model PromotionPlanEntry {
-  id String @id @default(cuid())
-
-  planId String
-  plan   PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-
-  studentId        String
-  fromClassId      String?
-  suggestedClassId String?
-  overrideClassId  String?
-  finalClassId     String?
-
-  fromStream      String?
-  suggestedStream String?
-  overrideStream  String?
-  finalStream     String?
-
-  status PromotionPlanEntryStatus @default(PENDING)
-  action String // PROMOTE | RETAIN | GRADUATE | SKIP
-
-  warnings   Json? // string[]
-  conflicts  Json? // string[]
-  adminNotes String?
-
-  // Populated after execution
-  executedPromotionId String?
-  executedAt          DateTime?
-
-  tenantId String
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([planId, studentId])
-  @@index([planId, status])
-  @@index([tenantId, studentId])
-  @@map("promotion_plan_entries")
-}
+// =============================================================================
+// CLASSES & STREAMS
+// =============================================================================
 
 model Class {
   id          String    @id @default(cuid())
-  name        String
+  name        String // "Grade 1 East", "Form 3 Blue"
   displayName String?
-  gradeLevel  Int
   section     String?
   capacity    Int       @default(40)
   classType   ClassType @default(REGULAR)
-  stream      String?
   language    String?
-  curriculum  String?
+
+  gradeId String
+  grade   Grade  @relation(fields: [gradeId], references: [id], onDelete: Restrict)
 
   academicYearId String
-  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
   classTeacherId String?
   classTeacher   Teacher? @relation(fields: [classTeacherId], references: [id])
@@ -717,6 +912,8 @@ model Class {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  streams Stream[]
 
   students              Student[]             @relation("StudentCurrentClass")
   studentClassHistories StudentClassHistory[]
@@ -728,20 +925,49 @@ model Class {
   promotionsTo          StudentPromotion[]    @relation("PromotionToClass")
 
   @@unique([name, academicYearId, tenantId])
-  @@index([tenantId, academicYearId, gradeLevel])
+  @@index([tenantId, academicYearId, gradeId])
   @@map("classes")
 }
+
+model Stream {
+  id       String  @id @default(cuid())
+  name     String // "A", "Red", "Science"
+  capacity Int?
+  color    String? // for UI
+
+  classId String
+  class   Class  @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  students      Student[]      @relation("StudentCurrentStream")
+  feeStructures FeeStructure[]
+
+  @@unique([classId, name])
+  @@index([tenantId, classId])
+  @@map("streams")
+}
+
+// =============================================================================
+// SUBJECTS
+// =============================================================================
 
 model Subject {
   id           String          @id @default(cuid())
   name         String
   code         String
   description  String?
-  gradeLevel   Int
   isCompulsory Boolean         @default(true)
   credits      Int             @default(1)
   category     SubjectCategory @default(CORE)
   department   String?
+
+  gradeId String?
+  grade   Grade?  @relation(fields: [gradeId], references: [id], onDelete: SetNull)
 
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -752,6 +978,7 @@ model Subject {
   classes ClassSubject[]
 
   @@unique([code, tenantId])
+  @@index([tenantId, gradeId])
   @@map("subjects")
 }
 
@@ -771,23 +998,67 @@ model ClassSubject {
 }
 
 // =============================================================================
-// PEOPLE
+// ADMISSION COUNTER
 // =============================================================================
 
+model AdmissionCounter {
+  id              String            @id @default(cuid())
+  tenantId        String            @unique
+  prefix          String            @default("") // "GW" or ""
+  yearPrefix      String? // "2026" if YEAR_PREFIXED
+  currentSequence Int               @default(0)
+  paddingLength   Int               @default(4)
+  strategy        AdmissionStrategy @default(SEQUENTIAL)
+  lastIssuedAt    DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("admission_counters")
+}
+
+// =============================================================================
+// PEOPLE — STUDENTS, GUARDIANS, TEACHERS
+// =============================================================================
+
+// `Student` carries its OWN profile data because most students (lower primary)
+// will never have a User account. When a portal account is needed, `userId` is
+// set lazily.
 model Student {
-  id               String        @id @default(cuid())
-  rollNumber       String
-  admissionNumber  String
-  admissionDate    DateTime
-  academicStatus   StudentStatus @default(ACTIVE)
-  emergencyContact String?
-  emergencyPhone   String?
+  id              String    @id @default(cuid())
+  admissionNumber String    // immutable lifetime ID — issued by AdmissionCounter
+  rollNumber      String?   // optional, per-class register number, config-driven
+  admissionDate   DateTime  @default(now())
 
-  userId String @unique
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName   String
+  middleName  String?
+  lastName    String
+  dateOfBirth DateTime?
+  gender      Gender?
+  nationality String?
+  bloodGroup  String?
+  photoUrl    String?
 
+  // Optional contact — never required at DB level (config-driven)
+  email String?
+  phone String?
+
+  // Optional User link — only when student has a portal login
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // ─── Class / Stream pointers (denormalised, kept in sync by ClassHistory)
   classId String
-  class   Class  @relation("StudentCurrentClass", fields: [classId], references: [id])
+  class   Class  @relation("StudentCurrentClass", fields: [classId], references: [id], onDelete: Restrict)
+
+  streamId String?
+  stream   Stream? @relation("StudentCurrentStream", fields: [streamId], references: [id], onDelete: SetNull)
+
+  academicStatus StudentStatus @default(ACTIVE)
+
+  notes String?
 
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -795,6 +1066,8 @@ model Student {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // ─── Relations ──────────────────────────────────────────────
+  guardians         StudentGuardian[]
   classHistories    StudentClassHistory[]
   attendanceRecords AttendanceRecord[]
   studentFees       StudentFee[]
@@ -806,7 +1079,66 @@ model Student {
   @@unique([rollNumber, tenantId])
   @@unique([admissionNumber, tenantId])
   @@index([tenantId, classId, academicStatus])
+  @@index([tenantId, streamId])
   @@map("students")
+}
+
+model Guardian {
+  id          String  @id @default(cuid())
+  firstName   String
+  lastName    String
+  middleName  String?
+  email       String?
+  phone       String
+  altPhone    String?
+  occupation  String?
+  employer    String?
+  address     String?
+  nationalId  String?
+  photoUrl    String?
+
+  // Optional User link for parent portal access
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  students StudentGuardian[]
+
+  @@index([tenantId, phone])
+  @@index([tenantId, email])
+  @@map("guardians")
+}
+
+model StudentGuardian {
+  id                 String               @id @default(cuid())
+  studentId          String
+  guardianId         String
+  relationship       GuardianRelationship
+  isPrimary          Boolean              @default(false)
+  isEmergencyContact Boolean              @default(false)
+  canPickup          Boolean              @default(true)
+  receivesFinancials Boolean              @default(true)
+  receivesAcademics  Boolean              @default(true)
+  notes              String?
+
+  student  Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  guardian Guardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studentId, guardianId])
+  @@index([tenantId, studentId])
+  @@index([tenantId, guardianId])
+  @@map("student_guardians")
 }
 
 model StudentClassHistory {
@@ -814,7 +1146,7 @@ model StudentClassHistory {
   studentId      String
   classId        String
   academicYearId String
-  stream         String?
+  streamId       String?
   startDate      DateTime  @default(now())
   endDate        DateTime?
   isCurrent      Boolean   @default(true)
@@ -861,6 +1193,84 @@ model StudentPromotion {
   @@map("student_promotions")
 }
 
+model PromotionPlan {
+  id       String              @id @default(cuid())
+  name     String
+  status   PromotionPlanStatus @default(DRAFT)
+  strategy PromotionStrategy   @default(PRESERVE_STREAM)
+
+  fromAcademicYearId String
+  toAcademicYearId   String
+
+  totalStudents      Int @default(0)
+  plannedPromotions  Int @default(0)
+  plannedGraduations Int @default(0)
+  plannedRetentions  Int @default(0)
+  conflictsCount     Int @default(0)
+  warningsCount      Int @default(0)
+
+  notes   String?
+  summary Json?
+
+  createdById   String?
+  approvedById  String?
+  approvedAt    DateTime?
+  executedById  String?
+  executedAt    DateTime?
+  cancelledById String?
+  cancelledAt   DateTime?
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  entries PromotionPlanEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, toAcademicYearId])
+  @@map("promotion_plans")
+}
+
+model PromotionPlanEntry {
+  id String @id @default(cuid())
+
+  planId String
+  plan   PromotionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  studentId        String
+  fromClassId      String?
+  suggestedClassId String?
+  overrideClassId  String?
+  finalClassId     String?
+
+  fromStreamId      String?
+  suggestedStreamId String?
+  overrideStreamId  String?
+  finalStreamId     String?
+
+  status PromotionPlanEntryStatus @default(PENDING)
+  action String
+
+  warnings   Json?
+  conflicts  Json?
+  adminNotes String?
+
+  executedPromotionId String?
+  executedAt          DateTime?
+
+  tenantId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([planId, studentId])
+  @@index([planId, status])
+  @@index([tenantId, studentId])
+  @@map("promotion_plan_entries")
+}
+
 model Teacher {
   id               String           @id @default(cuid())
   employeeId       String
@@ -889,7 +1299,7 @@ model Teacher {
 }
 
 // =============================================================================
-// FEE STRUCTURES (Versioned)
+// FEE STRUCTURES
 // =============================================================================
 
 model FeeStructure {
@@ -912,9 +1322,18 @@ model FeeStructure {
   academicTermId String?
   academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id])
 
-  classId    String?
-  class      Class?  @relation(fields: [classId], references: [id])
-  gradeLevel Int?
+  // ─── NORMALIZED scope targets ──
+  curriculumId String?
+  curriculum   Curriculum? @relation(fields: [curriculumId], references: [id])
+
+  gradeId String?
+  grade   Grade?  @relation(fields: [gradeId], references: [id])
+
+  classId String?
+  class   Class?  @relation(fields: [classId], references: [id])
+
+  streamId String?
+  stream   Stream? @relation(fields: [streamId], references: [id])
 
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -929,7 +1348,8 @@ model FeeStructure {
   invoices      Invoice[]
 
   @@index([tenantId, academicYearId, academicTermId])
-  @@index([tenantId, classId, gradeLevel])
+  @@index([tenantId, curriculumId, gradeId])
+  @@index([tenantId, classId, streamId])
   @@index([tenantId, scope, isAutoBill])
   @@map("fee_structures")
 }
@@ -990,9 +1410,10 @@ model FeeStructureLevel {
   feeStructureId String
   feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
 
-  classId    String?
-  class      Class?  @relation(fields: [classId], references: [id])
-  gradeLevel Int?
+  classId String?
+  class   Class?  @relation(fields: [classId], references: [id])
+
+  gradeId String?
 
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1003,7 +1424,7 @@ model FeeStructureLevel {
   components FeeLevelComponent[]
 
   @@unique([feeStructureId, classId])
-  @@index([feeStructureId, gradeLevel])
+  @@index([feeStructureId, gradeId])
   @@index([tenantId])
   @@map("fee_structure_levels")
 }
@@ -1029,6 +1450,35 @@ model FeeLevelComponent {
 
   @@index([feeStructureLevelId, sortOrder])
   @@map("fee_level_components")
+}
+
+// =============================================================================
+// FEE PAYMENT RULES — drives "by week N, X% must be paid"
+// =============================================================================
+
+model FeePaymentRule {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+
+  // Optional term scoping — null means applies to all terms
+  termId String?
+  term   AcademicTerm? @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  byWeek        Int // e.g. 2 = "by end of week 2 of the term"
+  minPercentage Float // e.g. 50 = "at least 50% paid"
+  lateFeePerDay Float?
+
+  isActive Boolean @default(true)
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, termId, isActive])
+  @@map("fee_payment_rules")
 }
 
 // =============================================================================
@@ -1066,7 +1516,7 @@ model StudentDiscount {
 }
 
 // =============================================================================
-// INVOICE SYSTEM
+// INVOICES
 // =============================================================================
 
 model Invoice {
@@ -1295,7 +1745,9 @@ model Examination {
   @@map("examinations")
 }
 
-// ─── MODELS ──────────────────────────────────────────────────────────────────
+// =============================================================================
+// ATTENDANCE
+// =============================================================================
 
 model AttendanceSession {
   id          String                  @id @default(cuid())
@@ -1304,7 +1756,6 @@ model AttendanceSession {
   status      AttendanceSessionStatus @default(DRAFT)
   notes       String?
 
-  // Aggregates (maintained by service on mark / finalize)
   totalStudents Int @default(0)
   presentCount  Int @default(0)
   absentCount   Int @default(0)
@@ -1321,17 +1772,13 @@ model AttendanceSession {
   academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id], onDelete: SetNull)
 
   subjectId String?
-  // No FK relation to Subject intentionally — subject attendance is optional
-  // and can reference ClassSubject label instead.
 
-  takenById String?
-  takenAt   DateTime?
-
+  takenById     String?
+  takenAt       DateTime?
   finalizedById String?
   finalizedAt   DateTime?
-
-  lockedById String?
-  lockedAt   DateTime?
+  lockedById    String?
+  lockedAt      DateTime?
 
   tenantId String
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1375,6 +1822,61 @@ model AttendanceRecord {
 }
 
 // =============================================================================
+// EMAIL (templates + delivery audit)
+// =============================================================================
+
+model EmailTemplate {
+  id          String  @id @default(cuid())
+  code        String  // 'welcome' | 'password_reset' | 'fee_reminder' | ...
+  name        String
+  description String?
+  subject     String
+  body        String  // mustache / handlebars-style placeholders
+  isHtml      Boolean @default(true)
+  isActive    Boolean @default(true)
+  isSystem    Boolean @default(false) // SuperAdmin-managed defaults
+
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries EmailDelivery[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
+  @@map("email_templates")
+}
+
+model EmailDelivery {
+  id              String      @id @default(cuid())
+  toEmail         String
+  toName          String?
+  subject         String
+  bodySnapshot    String
+  status          EmailStatus @default(QUEUED)
+  providerMessageId String?
+  errorMessage    String?
+  sentAt          DateTime?
+  deliveredAt     DateTime?
+  context         Json?       // template variables snapshot
+
+  templateId String?
+  template   EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, status, createdAt])
+  @@index([toEmail])
+  @@map("email_deliveries")
+}
+
+// =============================================================================
 // NOTIFICATIONS
 // =============================================================================
 
@@ -1407,7 +1909,7 @@ model Notification {
 }
 
 // =============================================================================
-// REPORT SNAPSHOTS
+// REPORTS
 // =============================================================================
 
 model ReportSnapshot {
@@ -1428,7 +1930,7 @@ model ReportSnapshot {
 }
 
 // =============================================================================
-// AUDIT & ACTIVITY LOGS
+// AUDIT & ACTIVITY
 // =============================================================================
 
 model AuditLog {
@@ -1466,79 +1968,4 @@ model ActivityLog {
   @@index([action, createdAt])
   @@index([entityType, createdAt])
   @@map("activity_logs")
-}
-
-// =============================================================================
-// TENANT SETTINGS
-// =============================================================================
-
-model TenantSettings {
-  id       String @id @default(cuid())
-  tenantId String @unique
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  currency         String           @default("KES")
-  currencySymbol   String           @default("KSh")
-  currencyPosition CurrencyPosition @default(BEFORE)
-  currencyDecimals Int              @default(2)
-  timezone         String           @default("Africa/Nairobi")
-  locale           String           @default("en-KE")
-  dateFormat       String           @default("DD/MM/YYYY")
-  timeFormat       TimeFormat       @default(H24)
-  firstDayOfWeek   Int              @default(1)
-
-  logoUrl        String?
-  faviconUrl     String?
-  primaryColor   String  @default("#3b82f6")
-  secondaryColor String  @default("#8b5cf6")
-  brandTagline   String?
-
-  defaultGradingScale String @default("PERCENTAGE")
-  passingGrade        Float  @default(50)
-  attendanceThreshold Float  @default(75)
-
-  receiptPrefix             String             @default("RCP")
-  invoicePrefix             String             @default("INV")
-  enableLateFees            Boolean            @default(false)
-  lateFeePercentage         Float              @default(0)
-  lateFeeGraceDays          Int                @default(0)
-  enabledPaymentMethods     Json               @default("[\"CASH\",\"MOBILE_MONEY\",\"BANK_TRANSFER\",\"CHEQUE\"]")
-  allowPartialPayments      Boolean            @default(true)
-  allowOverpayment          Boolean            @default(false)
-  requirePaymentReference   Boolean            @default(false)
-  defaultAllocationStrategy AllocationStrategy @default(FIFO)
-  autoCarryForwardArrears   Boolean            @default(true)
-
-  enableEmailNotifications   Boolean @default(true)
-  enableSmsNotifications     Boolean @default(false)
-  enablePushNotifications    Boolean @default(false)
-  feeReminderDays            Json    @default("[7,3,1]")
-  termActivationReminderDays Json    @default("[7,3,1]")
-
-  sessionTimeoutMinutes    Int     @default(60)
-  passwordMinLength        Int     @default(8)
-  passwordRequireUppercase Boolean @default(true)
-  passwordRequireNumber    Boolean @default(true)
-  passwordRequireSymbol    Boolean @default(false)
-  requireTwoFactor         Boolean @default(false)
-  maxLoginAttempts         Int     @default(5)
-  lockoutDurationMinutes   Int     @default(15)
-
-  emailSenderName    String?
-  emailSenderAddress String?
-  smsProvider        String?
-  smsSenderId        String?
-
-  enableParentPortal   Boolean @default(true)
-  enableStudentPortal  Boolean @default(true)
-  enableOnlinePayments Boolean @default(false)
-  enableBulkImport     Boolean @default(true)
-  enableAutoPromotion  Boolean @default(false)
-
-  customFields Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("tenant_settings")
 }
