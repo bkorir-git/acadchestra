@@ -1,6 +1,6 @@
 /**
  * @file student-class-history.dto.ts
- * @description DTOs for student class history ledger entries.
+ * @module academic/student-class-history/dto
  */
 
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
@@ -25,6 +25,11 @@ export class CreateStudentClassHistoryDto {
   @IsString()
   academicYearId!: string;
 
+  @ApiPropertyOptional({ description: 'Stream FK (must belong to the class)' })
+  @IsOptional()
+  @IsString()
+  streamId?: string;
+
   @ApiProperty()
   @IsDateString()
   startDate!: string;
@@ -34,25 +39,16 @@ export class CreateStudentClassHistoryDto {
   @IsDateString()
   endDate?: string;
 
-  @ApiPropertyOptional({
-    description:
-      'Free-text reason: INITIAL_ENROLLMENT, AUTO_PROMOTION, MANUAL_PROMOTION, TRANSFER, STREAM_REASSIGNMENT, REPETITION, WITHDRAWAL',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  reason?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MaxLength(60)
-  stream?: string;
-
   @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()
   isCurrent?: boolean;
+
+  @ApiPropertyOptional({ example: 'INITIAL_ENROLLMENT' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  reason?: string;
 }
 
 export class UpdateStudentClassHistoryDto extends PartialType(
