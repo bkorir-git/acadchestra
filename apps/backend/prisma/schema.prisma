@@ -79,6 +79,13 @@ enum ClassType {
   REMEDIAL
 }
 
+enum AcademicProgressStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  HOLIDAY
+  COMPLETED
+}
+
 enum SubjectCategory {
   CORE
   ELECTIVE
@@ -330,6 +337,8 @@ enum ActivityEntityType {
   EMAIL_TEMPLATE
   EMAIL_DELIVERY
   ONBOARDING
+  UPLOAD_ASSET
+  BACKUP_JOB
 }
 
 enum PromotionPlanStatus {
@@ -418,6 +427,52 @@ enum EmailStatus {
   COMPLAINED
 }
 
+enum UploadCategory {
+  TENANT_LOGO
+  TENANT_FAVICON
+  STUDENT_PHOTO
+  STUDENT_DOCUMENT
+  STAFF_PHOTO
+  STAFF_DOCUMENT
+  CERTIFICATE
+  IMPORT_STAGING
+  GENERAL
+}
+
+enum UploadStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum BackupType {
+  MANUAL
+  SCHEDULED
+}
+
+enum BackupStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum BackupArtifactKind {
+  DATABASE_DUMP
+  UPLOADS_TARBALL
+  MANIFEST
+  ARCHIVE
+}
+
+enum RestoreStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 // =============================================================================
 // MULTI-TENANT
 // =============================================================================
@@ -457,6 +512,7 @@ model Tenant {
   users    User[]
   roles    Role[]
   teachers Teacher[]
+  uploadAssets    UploadAsset[]
 
   curriculums           Curriculum[]
   grades                Grade[]
@@ -1907,6 +1963,111 @@ model Notification {
   @@index([scheduledAt, status])
   @@map("notifications")
 }
+
+model UploadAsset {
+  id          String         @id @default(cuid())
+  category    UploadCategory
+  fileName    String
+  storedName  String         // randomized name on disk
+  mimeType    String
+  sizeBytes   Int
+  checksum    String?        // sha256
+  storagePath String         // relative to UPLOAD_ROOT
+  publicUrl   String?        // resolved URL when served via /uploads/* or R2
+  status      UploadStatus   @default(ACTIVE)
+  ownerId     String?        // optional User.id who uploaded
+  ownerType   String?        // "USER" | "TENANT" | "SYSTEM"
+  metadata    Json?
+
+  tenantId String?
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, category, status])
+  @@index([category, status])
+  @@map("upload_assets")
+}
+
+model BackupPolicy {
+  id            String   @id @default(cuid())
+  isEnabled     Boolean  @default(true)
+  scheduleCron  String   @default("0 2 * * *") // daily at 02:00
+  retentionKeep Int      @default(5)            // keep N most recent successful backups
+  includeUploads Boolean @default(true)
+  remoteSync    Boolean  @default(true)         // push to R2 when configured
+  notes         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("backup_policies")
+}
+
+model BackupJob {
+  id              String        @id @default(cuid())
+  type            BackupType    @default(MANUAL)
+  status          BackupStatus  @default(PENDING)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  totalSizeBytes  Int?
+  archivePath     String?       // local path to .tar.gz
+  remoteKey       String?       // R2 object key
+  remoteUrl       String?       // signed/public URL (if generated)
+  errorMessage    String?
+  triggeredById   String?       // user id who triggered (manual)
+  manifest        Json?         // table counts, file counts, version
+  retainedUntil   DateTime?     // null = governed by retention policy
+
+  artifacts BackupArtifact[]
+  restores  RestoreJob[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([type, createdAt])
+  @@map("backup_jobs")
+}
+
+model BackupArtifact {
+  id        String             @id @default(cuid())
+  kind      BackupArtifactKind
+  path      String             // local path
+  remoteKey String?            // R2 key if synced
+  sizeBytes Int
+  checksum  String?
+
+  backupJobId String
+  backupJob   BackupJob @relation(fields: [backupJobId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([backupJobId])
+  @@map("backup_artifacts")
+}
+
+model RestoreJob {
+  id              String        @id @default(cuid())
+  status          RestoreStatus @default(PENDING)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  errorMessage    String?
+  triggeredById   String        // user id who triggered (must be SuperAdmin)
+  confirmationHash String       // bcrypt of password used to confirm
+  notes           String?
+
+  backupJobId String
+  backupJob   BackupJob @relation(fields: [backupJobId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@map("restore_jobs")
+}
+
 
 // =============================================================================
 // REPORTS
