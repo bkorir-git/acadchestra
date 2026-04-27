@@ -14,8 +14,6 @@
 
 import { PrismaClient, TermStructure } from '@prisma/client';
 
-const prisma = new PrismaClient();
-
 interface TemplateSeed {
   code: string;
   name: string;
@@ -26,7 +24,6 @@ interface TemplateSeed {
 }
 
 const TEMPLATES: TemplateSeed[] = [
-  // ─────────────────────────────────────── CBC (Kenya, current)
   {
     code: 'cbc',
     name: 'CBC',
@@ -48,14 +45,11 @@ const TEMPLATES: TemplateSeed[] = [
       { name: 'Grade 9', levelOrder: 11 },
     ],
   },
-
-  // ─────────────────────────────────────── 8-4-4 (Kenya, legacy)
   {
     code: 'k844',
     name: 'K-8-4-4',
     country: 'KE',
-    description:
-      'Legacy Kenyan 8-4-4 system. 8 years primary, 4 years secondary, 4 years university.',
+    description: 'Legacy Kenyan 8-4-4 system.',
     defaultTermStructure: TermStructure.THREE_TERMS,
     grades: [
       { name: 'Std 1', displayName: 'Standard 1', levelOrder: 1 },
@@ -72,8 +66,6 @@ const TEMPLATES: TemplateSeed[] = [
       { name: 'Form 4', levelOrder: 12 },
     ],
   },
-
-  // ─────────────────────────────────────── British system
   {
     code: 'british',
     name: 'British',
@@ -82,23 +74,12 @@ const TEMPLATES: TemplateSeed[] = [
     defaultTermStructure: TermStructure.THREE_TERMS,
     grades: [
       { name: 'Reception', levelOrder: 1 },
-      { name: 'Year 1', levelOrder: 2 },
-      { name: 'Year 2', levelOrder: 3 },
-      { name: 'Year 3', levelOrder: 4 },
-      { name: 'Year 4', levelOrder: 5 },
-      { name: 'Year 5', levelOrder: 6 },
-      { name: 'Year 6', levelOrder: 7 },
-      { name: 'Year 7', levelOrder: 8 },
-      { name: 'Year 8', levelOrder: 9 },
-      { name: 'Year 9', levelOrder: 10 },
-      { name: 'Year 10', levelOrder: 11 },
-      { name: 'Year 11', levelOrder: 12 },
-      { name: 'Year 12', levelOrder: 13 },
-      { name: 'Year 13', levelOrder: 14 },
+      ...Array.from({ length: 13 }, (_, i) => ({
+        name: `Year ${i + 1}`,
+        levelOrder: i + 2,
+      })),
     ],
   },
-
-  // ─────────────────────────────────────── IGCSE
   {
     code: 'igcse',
     name: 'IGCSE',
@@ -113,30 +94,22 @@ const TEMPLATES: TemplateSeed[] = [
       { name: 'Y11', displayName: 'Year 11', levelOrder: 5 },
     ],
   },
-
-  // ─────────────────────────────────────── University (semester-based)
   {
     code: 'uni-semester',
     name: 'University Semester',
-    description:
-      'Standard 4-year undergraduate program with two semesters per year.',
+    description: '4-year undergraduate program with two semesters per year.',
     defaultTermStructure: TermStructure.TWO_SEMESTERS,
-    grades: [
-      { name: 'Sem 1', displayName: 'Semester 1', levelOrder: 1 },
-      { name: 'Sem 2', displayName: 'Semester 2', levelOrder: 2 },
-      { name: 'Sem 3', displayName: 'Semester 3', levelOrder: 3 },
-      { name: 'Sem 4', displayName: 'Semester 4', levelOrder: 4 },
-      { name: 'Sem 5', displayName: 'Semester 5', levelOrder: 5 },
-      { name: 'Sem 6', displayName: 'Semester 6', levelOrder: 6 },
-      { name: 'Sem 7', displayName: 'Semester 7', levelOrder: 7 },
-      { name: 'Sem 8', displayName: 'Semester 8', levelOrder: 8 },
-    ],
+    grades: Array.from({ length: 8 }, (_, i) => ({
+      name: `Sem ${i + 1}`,
+      displayName: `Semester ${i + 1}`,
+      levelOrder: i + 1,
+    })),
   },
 ];
 
-export async function seedCurriculumTemplates() {
-  console.log('🌱 Seeding curriculum templates...');
-
+export async function seedCurriculumTemplates(prisma: PrismaClient) {
+  let templates = 0;
+  let grades = 0;
   for (const tpl of TEMPLATES) {
     const template = await prisma.curriculumTemplate.upsert({
       where: { code: tpl.code },
@@ -155,7 +128,7 @@ export async function seedCurriculumTemplates() {
         defaultTermStructure: tpl.defaultTermStructure,
       },
     });
-
+    templates++;
     for (const g of tpl.grades) {
       await prisma.gradeTemplate.upsert({
         where: {
@@ -170,24 +143,10 @@ export async function seedCurriculumTemplates() {
           displayName: g.displayName,
           levelOrder: g.levelOrder,
         },
-        update: {
-          name: g.name,
-          displayName: g.displayName,
-        },
+        update: { name: g.name, displayName: g.displayName },
       });
+      grades++;
     }
-
-    console.log(`  ✅ ${tpl.name} (${tpl.grades.length} grades)`);
   }
-
-  console.log('✨ Curriculum templates seeded.');
-}
-
-if (require.main === module) {
-  seedCurriculumTemplates()
-    .catch((e) => {
-      console.error(e);
-      process.exit(1);
-    })
-    .finally(() => prisma.$disconnect());
+  return { templates, grades };
 }

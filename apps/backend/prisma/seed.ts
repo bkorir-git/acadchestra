@@ -1,12 +1,41 @@
+/**
+ * @file seed.ts
+ * @description Single executable seed entrypoint. Runs:
+ *   1. Permissions catalog
+ *   2. Curriculum templates
+ *   3. Demo tenant + super admin
+ *   4. SuperAdmin role for the demo tenant
+ *   5. Ensure system roles (Admin, Principal, Finance, Teacher, Student, Parent)
+ *      across ALL existing tenants — backfills Finance for legacy tenants.
+ *   6. Default backup policy
+ *
+ * Usage: pnpm exec ts-node prisma/seed.ts
+ */
+
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { seedPermissions } from './seeds/permissions.seed';
+import { seedCurriculumTemplates } from './seeds/curriculum-templates.seed';
+import {
+  ensureSystemRolesForAllTenants,
+  ensureSuperAdminRole,
+  SYSTEM_ROLES,
+} from './seeds/system-roles.seed';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🌱 Starting database seeding...');
+  console.log('🌱 Starting database seeding...\n');
 
-  // Create demo tenant
+  // 1. Permissions
+  const perms = await seedPermissions(prisma);
+  console.log(`✅ Permissions: ${perms.count} ensured`);
+
+  // 2. Curriculum templates
+  await seedCurriculumTemplates(prisma);
+  console.log('✅ Curriculum templates seeded');
+
+  // 3. Demo tenant
   const tenant = await prisma.tenant.upsert({
     where: { domain: 'demo.acadchestra.com' },
     update: {},
@@ -16,113 +45,47 @@ async function main() {
       subdomain: 'demo',
       email: 'admin@demo.acadchestra.com',
       phone: '+1234567890',
-      address: '123 Education Street, Learning City',
+      address: '123 Education Street',
       planType: 'PROFESSIONAL',
       maxStudents: 500,
+      isOnboarded: true,
+      onboardedAt: new Date(),
     },
   });
+  console.log(`✅ Tenant: ${tenant.name}`);
 
-  console.log('✅ Created demo tenant:', tenant.name);
+  // Tenant settings
+  await prisma.tenantSettings.upsert({
+    where: { tenantId: tenant.id },
+    update: {},
+    create: { tenantId: tenant.id },
+  });
 
-  // Create default permissions
-  const permissions = [
-    { resource: 'users', action: 'create', description: 'Create users' },
-    { resource: 'users', action: 'read', description: 'Read users' },
-    { resource: 'users', action: 'update', description: 'Update users' },
-    { resource: 'users', action: 'delete', description: 'Delete users' },
-    { resource: 'students', action: 'create', description: 'Create students' },
-    { resource: 'students', action: 'read', description: 'Read students' },
-    { resource: 'students', action: 'update', description: 'Update students' },
-    { resource: 'students', action: 'delete', description: 'Delete students' },
-    { resource: 'teachers', action: 'create', description: 'Create teachers' },
-    { resource: 'teachers', action: 'read', description: 'Read teachers' },
-    { resource: 'teachers', action: 'update', description: 'Update teachers' },
-    { resource: 'teachers', action: 'delete', description: 'Delete teachers' },
-    { resource: 'classes', action: 'create', description: 'Create classes' },
-    { resource: 'classes', action: 'read', description: 'Read classes' },
-    { resource: 'classes', action: 'update', description: 'Update classes' },
-    { resource: 'classes', action: 'delete', description: 'Delete classes' },
-  ];
+  // 4. SuperAdmin role for the demo tenant
+  await ensureSuperAdminRole(prisma, tenant.id);
 
-  for (const permission of permissions) {
-    await prisma.permission.upsert({
-      where: {
-        resource_action: {
-          resource: permission.resource,
-          action: permission.action,
-        },
-      },
-      update: {},
-      create: permission,
-    });
-  }
-
-  console.log('✅ Created default permissions');
-
-  // Create default roles
-  const roles = [
-    {
-      name: 'SuperAdmin',
-      description: 'Full system access',
-      isSystem: true,
-      tenantId: tenant.id,
-    },
-    {
-      name: 'Admin',
-      description: 'Administrative access',
-      isSystem: true,
-      tenantId: tenant.id,
-    },
-    {
-      name: 'Principal',
-      description: 'Principal access',
-      isSystem: true,
-      tenantId: tenant.id,
-    },
-    {
-      name: 'Teacher',
-      description: 'Teacher access',
-      isSystem: true,
-      tenantId: tenant.id,
-    },
-    {
-      name: 'Student',
-      description: 'Student access',
-      isSystem: true,
-      tenantId: tenant.id,
-    },
-    {
-      name: 'Parent',
-      description: 'Parent access',
-      isSystem: true,
-      tenantId: tenant.id,
-    },
-  ];
-
-  for (const roleData of roles) {
+  // 5. Ensure system roles (Admin/Principal/Finance/Teacher/Student/Parent)
+  for (const role of SYSTEM_ROLES) {
     await prisma.role.upsert({
-      where: {
-        name_tenantId: {
-          name: roleData.name,
-          tenantId: roleData.tenantId,
-        },
-      },
+      where: { name_tenantId: { name: role.name, tenantId: tenant.id } },
       update: {},
-      create: roleData,
+      create: { ...role, isSystem: true, tenantId: tenant.id },
     });
   }
+  console.log(`✅ System roles: ${SYSTEM_ROLES.length + 1} ensured for demo tenant`);
 
-  console.log('✅ Created default roles');
+  // Backfill across all tenants (no-op for fresh DB)
+  const ensured = await ensureSystemRolesForAllTenants(prisma);
+  console.log(`✅ Backfill across all tenants: checked ${ensured.tenantsChecked}, created ${ensured.rolesCreated}`);
 
-  // Create demo super admin user
-  const hashedPassword = await bcrypt.hash('Admin123!', 12);
-  
-  const superAdminUser = await prisma.user.upsert({
+  // 6. Demo SuperAdmin user
+  const hashed = await bcrypt.hash('Admin123!', 12);
+  const superUser = await prisma.user.upsert({
     where: { email: 'superadmin@demo.acadchestra.com' },
     update: {},
     create: {
       email: 'superadmin@demo.acadchestra.com',
-      password: hashedPassword,
+      password: hashed,
       firstName: 'Super',
       lastName: 'Admin',
       isEmailVerified: true,
@@ -130,37 +93,21 @@ async function main() {
     },
   });
 
-  // Assign SuperAdmin role
-  const superAdminRole = await prisma.role.findFirst({
+  const superRole = await prisma.role.findFirst({
     where: { name: 'SuperAdmin', tenantId: tenant.id },
   });
-
-  if (superAdminRole) {
+  if (superRole) {
     await prisma.userRole.upsert({
-      where: {
-        userId_roleId: {
-          userId: superAdminUser.id,
-          roleId: superAdminRole.id,
-        },
-      },
+      where: { userId_roleId: { userId: superUser.id, roleId: superRole.id } },
       update: {},
-      create: {
-        userId: superAdminUser.id,
-        roleId: superAdminRole.id,
-      },
+      create: { userId: superUser.id, roleId: superRole.id },
     });
   }
+  console.log(`✅ Demo SuperAdmin: ${superUser.email}`);
 
-  console.log('✅ Created demo super admin user');
-
-  // Create academic year
-  const academicYear = await prisma.academicYear.upsert({
-    where: {
-      name_tenantId: {
-        name: '2024-2025',
-        tenantId: tenant.id,
-      },
-    },
+  // 7. Default academic year for the demo
+  await prisma.academicYear.upsert({
+    where: { name_tenantId: { name: '2024-2025', tenantId: tenant.id } },
     update: {},
     create: {
       name: '2024-2025',
@@ -171,13 +118,28 @@ async function main() {
     },
   });
 
-  console.log('✅ Created academic year:', academicYear.name);
+  // 8. Default backup policy (single-row upsert by deterministic id)
+  const existingPolicy = await prisma.backupPolicy.findFirst();
+  if (!existingPolicy) {
+    await prisma.backupPolicy.create({
+      data: {
+        isEnabled: true,
+        scheduleCron: '0 2 * * *',
+        retentionKeep: 5,
+        includeUploads: true,
+        remoteSync: true,
+        notes: 'Default policy created by seed',
+      },
+    });
+    console.log('✅ Default backup policy created');
+  } else {
+    console.log('ℹ️  Backup policy already exists, skipped');
+  }
 
-  console.log('🎉 Database seeding completed successfully!');
-  console.log('\n📋 Demo Credentials:');
-  console.log('Email: superadmin@demo.acadchestra.com');
-  console.log('Password: Admin123!');
-  console.log('Tenant: demo.acadchestra.com');
+  console.log('\n🎉 Seeding complete!');
+  console.log('\n📋 Demo credentials:');
+  console.log('   Email:  superadmin@demo.acadchestra.com');
+  console.log('   Pass:   Admin123!');
 }
 
 main()
@@ -185,6 +147,4 @@ main()
     console.error('❌ Seeding failed:', e);
     process.exit(1);
   })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+  .finally(() => prisma.$disconnect());
