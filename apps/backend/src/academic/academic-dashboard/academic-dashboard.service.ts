@@ -2,8 +2,6 @@
  * @service AcademicDashboardService
  * @description Aggregated academic overview — current year, term, progress %,
  *   financials, enrollment distribution, activation suggestions.
- *   Identical compute to the legacy DashboardService but scoped under the
- *   Academic module for clearer ownership.
  */
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
@@ -59,17 +57,32 @@ export class AcademicDashboardService {
       }),
     ]);
 
+    // ─── Class distribution
     const classDistribution = await this.prisma.class.findMany({
       where: { tenantId, academicYearId: year.id },
       select: {
         id: true,
         name: true,
-        gradeLevel: true,
-        stream: true,
         capacity: true,
+        grade: {
+          select: {
+            id: true,
+            name: true,
+            displayName: true,
+            levelOrder: true,
+          },
+        },
+        streams: {
+          select: {
+            id: true,
+            name: true,
+            capacity: true,
+            _count: { select: { students: true } },
+          },
+        },
         _count: { select: { students: true } },
       },
-      orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
+      orderBy: [{ grade: { levelOrder: 'asc' } }, { name: 'asc' }],
     });
 
     const activeTerm = year.terms.find((t) => t.isActive) ?? null;
@@ -119,14 +132,24 @@ export class AcademicDashboardService {
       classDistribution: classDistribution.map((c) => ({
         id: c.id,
         name: c.name,
-        gradeLevel: c.gradeLevel,
-        stream: c.stream,
         capacity: c.capacity,
+        gradeId: c.grade.id,
+        gradeName: c.grade.name,
+        gradeDisplayName: c.grade.displayName ?? c.grade.name,
+        gradeLevelOrder: c.grade.levelOrder,
         studentCount: c._count.students,
+        streams: c.streams.map((s) => ({
+          id: s.id,
+          name: s.name,
+          capacity: s.capacity ?? null,
+          studentCount: s._count.students,
+        })),
       })),
       activationSuggestions: suggestions,
     };
   }
+
+  // ─── Private helpers ────────────────────────────────────────────────────────
 
   private async collectBaseCounts(tenantId: string) {
     const [studentCount, teacherCount, classCount, activeYearCount] =
