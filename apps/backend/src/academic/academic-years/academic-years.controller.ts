@@ -1,5 +1,6 @@
 /**
- * @description Academic year endpoints with separate academic/financial lock actions.
+ * @file academic-years.controller.ts
+ * @module academic/academic-years
  */
 
 import {
@@ -28,7 +29,6 @@ import { CreateAcademicYearDto } from './dto/create-academic-year.dto';
 import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
 import { LockAcademicYearDto } from './dto/lock-academic-year.dto';
 import { CloneAcademicYearDto } from './dto/clone-academic-year.dto';
-import { SetStreamsConfigDto } from './dto/streams-config.dto';
 
 @ApiTags('Academic Years')
 @Controller('academic/years')
@@ -53,11 +53,6 @@ export class AcademicYearsController {
     return this.service.findAll(user, includeTerms !== 'false');
   }
 
-  /**
-   * GET /academic-years/current
-   * Returns { data: year | null, message? } so the frontend can distinguish
-   * "no current year set" (fresh school) from a real error. Never throws 404.
-   */
   @Get('current')
   @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher', 'Student')
   @ApiOperation({ summary: 'Get current academic year for tenant' })
@@ -119,27 +114,11 @@ export class AcademicYearsController {
     return this.service.remove(id, user);
   }
 
-  @Get(':id/streams-config')
-  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
-  getStreamsConfig(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.service.getStreamsConfig(id, user);
-  }
-
-  @Patch(':id/streams-config')
-  @Roles('SuperAdmin', 'Admin', 'Principal')
-  setStreamsConfig(
-    @Param('id') id: string,
-    @Body() dto: SetStreamsConfigDto,
-    @CurrentUser() user: any,
-  ) {
-    return this.service.setStreamsConfig(id, dto, user);
-  }
-
   @Post(':id/clone')
   @Roles('SuperAdmin', 'Admin', 'Principal')
   @ApiOperation({
     summary:
-      'Clone a year — copies structure and (optionally) classes without students',
+      'Clone a year — copies structure (and optionally classes + streams) without students',
   })
   cloneYear(
     @Param('id') id: string,
