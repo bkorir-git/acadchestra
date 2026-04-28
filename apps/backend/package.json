@@ -21,11 +21,12 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "db:seed": "ts-node prisma/seed.ts",
-    "db:seed-test": "ts-node prisma/seeds/seed-cbc-school.ts",
-    "db:seed-curriculum": "ts-node prisma/seeds/curriculum-templates.seed.ts"
+    "db:seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1037.0",
+    "@aws-sdk/lib-storage": "^3.1037.0",
+    "@aws-sdk/s3-request-presigner": "^3.1037.0",
     "@nestjs/bull": "^11.0.3",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
@@ -39,6 +40,7 @@
     "@nestjs/throttler": "^6.4.0",
     "@prisma/client": "^6.14.0",
     "@tanstack/react-table": "^8.21.3",
+    "archiver": "^5.3.2",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.2",
     "bull": "^4.16.5",
@@ -58,7 +60,8 @@
     "prisma": "^6.14.0",
     "redis": "^5.8.2",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "tar": "^7.5.13"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -66,15 +69,18 @@
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",
+    "@types/archiver": "^7.0.0",
     "@types/bcrypt": "^5.0.2",
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
+    "@types/multer": "^2.1.0",
     "@types/node": "^22.10.7",
     "@types/passport-jwt": "^4.0.1",
     "@types/passport-local": "^1.0.38",
     "@types/pdfkit": "^0.17.6",
     "@types/supertest": "^6.0.2",
+    "@types/tar": "^6.1.13",
     "@typescript-eslint/eslint-plugin": "^8.40.0",
     "@typescript-eslint/parser": "^8.40.0",
     "eslint": "^9.18.0",
