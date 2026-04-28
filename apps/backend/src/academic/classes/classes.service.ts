@@ -21,15 +21,21 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { ActivityService } from '../../common/activity/activity.service';
 import { CreateClassDto, UpdateClassDto } from './dto/class.dto';
-import { RequestActor } from '../academic-terms/academic-terms.service';
+
+interface RequestActor {
+  id: string;
+  tenantId: string;
+  firstName?: string;
+  lastName?: string;
+}
 
 export interface ClassesFilter {
   page?: number;
   limit?: number;
   search?: string;
-  gradeLevel?: number;
+  gradeId?: string;
   classType?: ClassType | string;
-  stream?: string;
+  streamId?: string;
   academicYearId?: string;
 }
 
@@ -48,12 +54,7 @@ export class ClassesService {
   async create(dto: CreateClassDto, actor: RequestActor) {
     const year = await this.prisma.academicYear.findFirst({
       where: { id: dto.academicYearId, tenantId: actor.tenantId },
-      select: {
-        id: true,
-        name: true,
-        isLocked: true,
-        streamsByGrade: true,
-      },
+      select: { id: true, name: true, isLocked: true },
     });
     if (!year) throw new NotFoundException('Academic year not found');
     if (year.isLocked) {
@@ -62,15 +63,11 @@ export class ClassesService {
       );
     }
 
-    // NEW: strict stream validation against year config — NO silent fallback
-    const { validateStreamForGrade } = await import(
-      '../academic-years/streams-config.helper.js'
-    );
-    validateStreamForGrade(
-      year.streamsByGrade as Record<string, string[]> | null,
-      dto.gradeLevel,
-      dto.stream?.trim() || null,
-    );
+    const grade = await this.prisma.grade.findFirst({
+      where: { id: dto.gradeId, tenantId: actor.tenantId },
+      select: { id: true, name: true, curriculumId: true },
+    });
+    if (!grade) throw new NotFoundException('Grade not found');
 
     const dup = await this.prisma.class.findFirst({
       where: {
@@ -92,28 +89,47 @@ export class ClassesService {
       if (!teacher) throw new NotFoundException('Class teacher not found');
     }
 
-    const created = await this.prisma.class.create({
-      data: {
-        tenantId: actor.tenantId,
-        academicYearId: dto.academicYearId,
-        name: dto.name.trim(),
-        displayName: dto.displayName?.trim(),
-        gradeLevel: dto.gradeLevel,
-        section: dto.section?.trim(),
-        capacity: dto.capacity ?? 40,
-        classType: dto.classType ?? ClassType.REGULAR,
-        stream: dto.stream?.trim() || null,
-        language: dto.language?.trim(),
-        curriculum: dto.curriculum?.trim(),
-        classTeacherId: dto.classTeacherId,
-      },
-      include: {
-        academicYear: { select: { id: true, name: true } },
-        classTeacher: {
-          include: { user: { select: { firstName: true, lastName: true } } },
+    // Validate inline stream names are unique
+    if (dto.streams?.length) {
+      const seen = new Set<string>();
+      for (const s of dto.streams) {
+        const key = s.name.trim().toLowerCase();
+        if (seen.has(key)) {
+          throw new BadRequestException(`Duplicate stream name: ${s.name}`);
+        }
+        seen.add(key);
+      }
+    }
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const cls = await tx.class.create({
+        data: {
+          tenantId: actor.tenantId,
+          academicYearId: dto.academicYearId,
+          gradeId: dto.gradeId,
+          name: dto.name.trim(),
+          displayName: dto.displayName?.trim(),
+          section: dto.section?.trim(),
+          capacity: dto.capacity ?? 40,
+          classType: dto.classType ?? ClassType.REGULAR,
+          language: dto.language?.trim(),
+          classTeacherId: dto.classTeacherId,
         },
-        _count: { select: { students: true, subjects: true } },
-      },
+      });
+
+      if (dto.streams?.length) {
+        await tx.stream.createMany({
+          data: dto.streams.map((s) => ({
+            tenantId: actor.tenantId,
+            classId: cls.id,
+            name: s.name.trim(),
+            capacity: s.capacity ?? null,
+            color: s.color?.trim() ?? null,
+          })),
+        });
+      }
+
+      return cls;
     });
 
     await this.activityService.log({
@@ -125,12 +141,12 @@ export class ClassesService {
       message: `${this.actorName(actor)} created class ${created.name}`,
       metadata: {
         academicYearId: dto.academicYearId,
-        gradeLevel: dto.gradeLevel,
-        stream: dto.stream,
+        gradeId: dto.gradeId,
+        streams: dto.streams?.map((s) => s.name) ?? [],
       },
     });
 
-    return created;
+    return this.findOne(created.id, actor);
   }
 
   // ─────────────────────────── READ (paginated)
@@ -142,17 +158,16 @@ export class ClassesService {
     const where: Prisma.ClassWhereInput = {
       tenantId: actor.tenantId,
       ...(filters.academicYearId && { academicYearId: filters.academicYearId }),
-      ...(filters.gradeLevel !== undefined && {
-        gradeLevel: filters.gradeLevel,
-      }),
+      ...(filters.gradeId && { gradeId: filters.gradeId }),
       ...(filters.classType && { classType: filters.classType as ClassType }),
-      ...(filters.stream && { stream: filters.stream }),
+      ...(filters.streamId && {
+        streams: { some: { id: filters.streamId } },
+      }),
       ...(filters.search && {
         OR: [
           { name: { contains: filters.search, mode: 'insensitive' } },
           { displayName: { contains: filters.search, mode: 'insensitive' } },
           { section: { contains: filters.search, mode: 'insensitive' } },
-          { stream: { contains: filters.search, mode: 'insensitive' } },
         ],
       }),
     };
@@ -162,9 +177,21 @@ export class ClassesService {
         where,
         skip,
         take: limit,
-        orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
+        orderBy: [{ grade: { levelOrder: 'asc' } }, { name: 'asc' }],
         include: {
           academicYear: { select: { id: true, name: true, isCurrent: true } },
+          grade: {
+            select: {
+              id: true,
+              name: true,
+              displayName: true,
+              levelOrder: true,
+              curriculumId: true,
+            },
+          },
+          streams: {
+            select: { id: true, name: true, capacity: true, color: true },
+          },
           classTeacher: {
             include: {
               user: {
@@ -185,12 +212,7 @@ export class ClassesService {
 
     return {
       data,
-      meta: {
-        total,
-        page,
-        limit,
-        pages: Math.ceil(total / limit),
-      },
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }
 
@@ -199,6 +221,20 @@ export class ClassesService {
       where: { id, tenantId: actor.tenantId },
       include: {
         academicYear: true,
+        grade: {
+          include: {
+            curriculum: { select: { id: true, name: true, code: true } },
+          },
+        },
+        streams: {
+          select: {
+            id: true,
+            name: true,
+            capacity: true,
+            color: true,
+            _count: { select: { students: true } },
+          },
+        },
         classTeacher: {
           include: {
             user: {
@@ -219,10 +255,7 @@ export class ClassesService {
             teacher: {
               include: {
                 user: {
-                  select: {
-                    firstName: true,
-                    lastName: true,
-                  },
+                  select: { firstName: true, lastName: true },
                 },
               },
             },
@@ -257,54 +290,9 @@ export class ClassesService {
             dateOfBirth: true,
           },
         },
+        stream: { select: { id: true, name: true } },
       },
       orderBy: [{ rollNumber: 'asc' }],
-    });
-  }
-
-  /** Lists distinct streams for a given academic year. */
-  async listStreams(actor: RequestActor, academicYearId?: string) {
-    const rows = await this.prisma.class.findMany({
-      where: {
-        tenantId: actor.tenantId,
-        academicYearId: academicYearId || undefined,
-        stream: { not: null },
-      },
-      select: {
-        stream: true,
-        gradeLevel: true,
-      },
-      distinct: ['stream', 'gradeLevel'],
-    });
-    // Group by stream → grade levels it appears in
-    const grouped: Record<string, number[]> = {};
-    for (const row of rows) {
-      if (!row.stream) continue;
-      if (!grouped[row.stream]) grouped[row.stream] = [];
-      grouped[row.stream].push(row.gradeLevel);
-    }
-    return Object.entries(grouped).map(([stream, grades]) => ({
-      stream,
-      gradeLevels: [...new Set(grades)].sort((a, b) => a - b),
-    }));
-  }
-
-  /** Classes sharing a stream label (useful for stream landing pages). */
-  async findByStream(
-    actor: RequestActor,
-    stream: string,
-    academicYearId?: string,
-  ) {
-    return this.prisma.class.findMany({
-      where: {
-        tenantId: actor.tenantId,
-        stream,
-        academicYearId: academicYearId || undefined,
-      },
-      include: {
-        _count: { select: { students: true } },
-      },
-      orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
     });
   }
 
@@ -313,9 +301,7 @@ export class ClassesService {
     const current = await this.prisma.class.findFirst({
       where: { id, tenantId: actor.tenantId },
       include: {
-        academicYear: {
-          select: { id: true, isLocked: true, streamsByGrade: true },
-        },
+        academicYear: { select: { id: true, isLocked: true } },
       },
     });
     if (!current) throw new NotFoundException('Class not found');
@@ -323,17 +309,11 @@ export class ClassesService {
       throw new BadRequestException('Academic year is locked');
     }
 
-    // If gradeLevel or stream is changing, revalidate against config
-    if (dto.gradeLevel !== undefined || dto.stream !== undefined) {
-      const { validateStreamForGrade } = await import(
-        '../academic-years/streams-config.helper.js'
-      );
-
-      validateStreamForGrade(
-        current.academicYear.streamsByGrade as Record<string, string[]> | null,
-        dto.gradeLevel ?? current.gradeLevel,
-        dto.stream !== undefined ? dto.stream?.trim() || null : current.stream,
-      );
+    if (dto.gradeId) {
+      const grade = await this.prisma.grade.findFirst({
+        where: { id: dto.gradeId, tenantId: actor.tenantId },
+      });
+      if (!grade) throw new NotFoundException('Grade not found');
     }
 
     if (dto.classTeacherId) {
@@ -343,26 +323,21 @@ export class ClassesService {
       if (!teacher) throw new NotFoundException('Class teacher not found');
     }
 
-    const updated = await this.prisma.class.update({
+    await this.prisma.class.update({
       where: { id },
       data: {
+        gradeId: dto.gradeId,
         name: dto.name?.trim(),
         displayName: dto.displayName?.trim(),
-        gradeLevel: dto.gradeLevel,
         section: dto.section?.trim(),
         capacity: dto.capacity,
         classType: dto.classType,
-        stream:
-          dto.stream !== undefined ? dto.stream?.trim() || null : undefined,
         language: dto.language?.trim(),
-        curriculum: dto.curriculum?.trim(),
         classTeacherId: dto.classTeacherId,
       },
-      include: {
-        academicYear: { select: { id: true, name: true } },
-        _count: { select: { students: true } },
-      },
     });
+
+    // Note: stream mutations live in the Streams module — not here.
 
     await this.activityService.log({
       action: ActivityAction.UPDATE,
@@ -370,11 +345,12 @@ export class ClassesService {
       entityId: id,
       tenantId: actor.tenantId,
       userId: actor.id,
-      message: `${this.actorName(actor)} updated class ${updated.name}`,
+      message: `${this.actorName(actor)} updated class ${current.name}`,
     });
 
-    return updated;
+    return this.findOne(id, actor);
   }
+
   // ─────────────────────────── DELETE
   async remove(id: string, actor: RequestActor) {
     const cls = await this.prisma.class.findFirst({
@@ -403,50 +379,13 @@ export class ClassesService {
     return { message: 'Class deleted successfully' };
   }
 
-  async getStreamsForGrade(
-    tenantId: string,
-    academicYearId: string,
-    gradeLevel: number,
-  ) {
-    const year = await this.prisma.academicYear.findFirst({
-      where: { id: academicYearId, tenantId },
-      select: { streamsByGrade: true },
-    });
-    if (!year) throw new NotFoundException('Academic year not found');
-
-    const config =
-      (year.streamsByGrade as Record<string, string[]> | null) ?? {};
-    const key = String(gradeLevel);
-    const entry = config[key];
-
-    if (entry === undefined) {
-      return {
-        configured: false,
-        streamless: false,
-        allowedStreams: [],
-        message: `Streams not configured for Grade ${gradeLevel}. Classes at this grade will be created without a stream.`,
-      };
-    }
-    if (entry.length === 0) {
-      return {
-        configured: true,
-        streamless: true,
-        allowedStreams: [],
-        message: `Grade ${gradeLevel} is streamless in this academic year.`,
-      };
-    }
-    return {
-      configured: true,
-      streamless: false,
-      allowedStreams: entry,
-      message: `Allowed streams for Grade ${gradeLevel}: ${entry.join(', ')}`,
-    };
-  }
-
   /**
-   * Resolve the default destination class for promotion:
-   *   same stream if present, gradeLevel+1, classType=REGULAR,
-   *   restricted to the target academic year.
+   * Resolve the default destination class for promotion.
+   *
+   * Strategy:
+   *   - Walk up Grade.levelOrder by 1 within the SAME Curriculum
+   *   - Find a class in the target year with classType=REGULAR
+   *   - Stream preservation is the caller's responsibility (PromotionPlan)
    */
   async resolvePromotionTarget(
     tenantId: string,
@@ -455,28 +394,31 @@ export class ClassesService {
   ) {
     const from = await this.prisma.class.findFirst({
       where: { id: fromClassId, tenantId },
-    });
-    if (!from) return null;
-    const nextGrade = from.gradeLevel + 1;
-
-    const preferred = await this.prisma.class.findFirst({
-      where: {
-        tenantId,
-        academicYearId: targetAcademicYearId,
-        gradeLevel: nextGrade,
-        classType: ClassType.REGULAR,
-        ...(from.stream ? { stream: from.stream } : {}),
+      include: {
+        grade: {
+          select: { id: true, levelOrder: true, curriculumId: true },
+        },
       },
     });
-    if (preferred) return preferred;
+    if (!from) return null;
+
+    const nextGrade = await this.prisma.grade.findFirst({
+      where: {
+        tenantId,
+        curriculumId: from.grade.curriculumId,
+        levelOrder: from.grade.levelOrder + 1,
+      },
+    });
+    if (!nextGrade) return null;
 
     return this.prisma.class.findFirst({
       where: {
         tenantId,
         academicYearId: targetAcademicYearId,
-        gradeLevel: nextGrade,
+        gradeId: nextGrade.id,
         classType: ClassType.REGULAR,
       },
+      include: { streams: { select: { id: true, name: true } } },
     });
   }
 }
