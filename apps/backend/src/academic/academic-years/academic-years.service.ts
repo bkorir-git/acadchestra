@@ -1,11 +1,12 @@
 /**
- * @description Transaction-safe academic year service with:
- *  - Non-overlapping year validation
- *  - Term count matches Tenant.termStructure
- *  - Separate academic & financial locks
- *  - Auto-archive past years
- *  - Progress integration
- *  - Full activity + event emission
+ * @file academic-years.service.ts
+ * @module academic/academic-years
+ * @description Academic-year CRUD + locks + clone
+ *
+ *   Clone semantics for classes:
+ *     - We carry `gradeId` (since grades survive across years)
+ *     - We DO NOT copy streams automatically — that's a follow-up step in the
+ *       streams module (POST /streams/clone-from-class for the new class).
  */
 
 import {
@@ -32,11 +33,6 @@ import {
 import { UpdateAcademicYearDto } from './dto/update-academic-year.dto';
 import { LockAcademicYearDto } from './dto/lock-academic-year.dto';
 import { CloneAcademicYearDto } from './dto/clone-academic-year.dto';
-import {
-  normalizeStreamsConfig,
-  validateStreamForGrade,
-} from './streams-config.helper';
-import { SetStreamsConfigDto } from './dto/streams-config.dto';
 
 interface RequestActor {
   id: string;
@@ -68,10 +64,7 @@ export class AcademicYearsService {
     return [a.firstName, a.lastName].filter(Boolean).join(' ') || 'System user';
   }
 
-  private expectedTermCount(
-    structure?: TermStructure,
-    totalTerms?: number,
-  ): number {
+  private expectedTermCount(structure?: TermStructure, totalTerms?: number) {
     if (structure === TermStructure.CUSTOM) return totalTerms ?? 3;
     if (structure === TermStructure.TWO_SEMESTERS) return 2;
     if (structure === TermStructure.THREE_TERMS) return 3;
@@ -302,7 +295,6 @@ export class AcademicYearsService {
         })),
       });
 
-      // Seed AcademicPeriod entries for each term
       await tx.academicPeriod.createMany({
         data: normalized.map((t) => ({
           name: t.name,
@@ -379,7 +371,6 @@ export class AcademicYearsService {
     return year;
   }
 
-  /** Legacy internal callers — raw fetch, may return null. */
   async getCurrentYear(actor: RequestActor) {
     return this.prisma.academicYear.findFirst({
       where: { tenantId: actor.tenantId, isCurrent: true },
@@ -387,11 +378,6 @@ export class AcademicYearsService {
     });
   }
 
-  /**
-   * PHASE 1: wrapped current-year fetch used by the HTTP endpoint. Returns
-   * { data: year | null, message? } — never throws 404 — so the frontend
-   * GlobalYearProvider gets a clean 200 on fresh-school state.
-   */
   async getCurrentYearWrapped(tenantId: string) {
     const year = await this.prisma.academicYear.findFirst({
       where: { tenantId, isCurrent: true },
@@ -401,14 +387,13 @@ export class AcademicYearsService {
         },
       },
     });
-
     return {
       data: year ?? null,
       message: year ? undefined : 'No current academic year configured',
     };
   }
 
-  // ─────────────────────── UPDATE / SET CURRENT / LOCKS / ARCHIVE / DELETE
+  // ─────────────────────── UPDATE / SET-CURRENT / LOCKS / ARCHIVE / DELETE
   async update(id: string, dto: UpdateAcademicYearDto, actor: RequestActor) {
     await this.prisma.$transaction(async (tx) => {
       const current = await tx.academicYear.findFirst({
@@ -664,84 +649,7 @@ export class AcademicYearsService {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  STREAMS CONFIG
-  // ═══════════════════════════════════════════════════════════════
-  async getStreamsConfig(id: string, actor: RequestActor) {
-    const year = await this.prisma.academicYear.findFirst({
-      where: { id, tenantId: actor.tenantId },
-      select: {
-        id: true,
-        name: true,
-        streamsByGrade: true,
-        promotionWindowStart: true,
-        promotionWindowEnd: true,
-      },
-    });
-    if (!year) throw new NotFoundException('Academic year not found');
-    return {
-      ...year,
-      streamsByGrade:
-        (year.streamsByGrade as Record<string, string[]> | null) ?? {},
-    };
-  }
-
-  async setStreamsConfig(
-    id: string,
-    dto: SetStreamsConfigDto,
-    actor: RequestActor,
-  ) {
-    const config = normalizeStreamsConfig(dto.streamsByGrade);
-    const year = await this.prisma.academicYear.findFirst({
-      where: { id, tenantId: actor.tenantId },
-      include: {
-        classes: {
-          select: { id: true, name: true, gradeLevel: true, stream: true },
-        },
-      },
-    });
-    if (!year) throw new NotFoundException('Academic year not found');
-    if (year.isLocked) throw new BadRequestException('Academic year is locked');
-
-    const conflicts: string[] = [];
-    for (const c of year.classes) {
-      try {
-        validateStreamForGrade(config, c.gradeLevel, c.stream);
-      } catch (e: any) {
-        conflicts.push(`• ${c.name}: ${e.message}`);
-      }
-    }
-    if (conflicts.length) {
-      throw new BadRequestException(
-        `Cannot apply config — existing classes would violate it:\n${conflicts.join('\n')}`,
-      );
-    }
-
-    const updated = await this.prisma.academicYear.update({
-      where: { id },
-      data: {
-        streamsByGrade: config as any,
-        promotionWindowStart: dto.promotionWindowStart
-          ? new Date(dto.promotionWindowStart)
-          : undefined,
-        promotionWindowEnd: dto.promotionWindowEnd
-          ? new Date(dto.promotionWindowEnd)
-          : undefined,
-      },
-    });
-    await this.activityService.log({
-      action: ActivityAction.UPDATE,
-      entityType: ActivityEntityType.ACADEMIC_YEAR,
-      entityId: id,
-      tenantId: actor.tenantId,
-      userId: actor.id,
-      message: `${this.actorName(actor)} updated streams configuration`,
-      metadata: { streamsByGrade: config },
-    });
-    return updated;
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  //  CLONE YEAR (unchanged)
+  //  CLONE YEAR — v2 (gradeId, no streamsByGrade, optional stream copy via Stream module)
   // ═══════════════════════════════════════════════════════════════
   async cloneYear(
     sourceId: string,
@@ -760,7 +668,13 @@ export class AcademicYearsService {
         include: {
           terms: { orderBy: { termNumber: 'asc' } },
           academicPeriods: { orderBy: { startDate: 'asc' } },
-          classes: true,
+          classes: {
+            include: {
+              streams: {
+                select: { id: true, name: true, capacity: true, color: true },
+              },
+            },
+          },
           feeStructures: { include: { feeComponents: true } },
         },
       });
@@ -790,10 +704,6 @@ export class AcademicYearsService {
           status: dto.setAsCurrent
             ? AcademicYearStatus.ACTIVE
             : AcademicYearStatus.DRAFT,
-          streamsByGrade:
-            dto.copyStreamsConfig !== false
-              ? ((source.streamsByGrade as any) ?? {})
-              : {},
         },
       });
 
@@ -806,7 +716,7 @@ export class AcademicYearsService {
         return new Date(newStart.getTime() + Math.round(ratio * targetSpan));
       };
 
-      let createdTermsMap = new Map<number, string>();
+      const createdTermsMap = new Map<number, string>();
       if (dto.copyTerms !== false && source.terms.length) {
         for (const t of source.terms) {
           const nt = await tx.academicTerm.create({
@@ -863,25 +773,39 @@ export class AcademicYearsService {
         }
       }
 
+      // Classes: clone shells
       if (dto.copyClasses !== false && source.classes.length) {
-        await tx.class.createMany({
-          data: source.classes.map((c) => ({
-            tenantId,
-            academicYearId: newYear.id,
-            name: c.name,
-            displayName: c.displayName,
-            gradeLevel: c.gradeLevel,
-            section: c.section,
-            capacity: c.capacity,
-            classType: c.classType,
-            stream: c.stream,
-            language: c.language,
-            curriculum: c.curriculum,
-            classTeacherId: null,
-          })),
-        });
+        for (const c of source.classes) {
+          const newClass = await tx.class.create({
+            data: {
+              tenantId,
+              academicYearId: newYear.id,
+              gradeId: c.gradeId,
+              name: c.name,
+              displayName: c.displayName,
+              section: c.section,
+              capacity: c.capacity,
+              classType: c.classType,
+              language: c.language,
+              classTeacherId: null,
+            },
+          });
+          if (dto.copyClasses && c.streams.length) {
+            await tx.stream.createMany({
+              data: c.streams.map((s) => ({
+                tenantId,
+                classId: newClass.id,
+                name: s.name,
+                capacity: s.capacity,
+                color: s.color,
+              })),
+            });
+          }
+        }
       }
 
+      // Fee structures — copy shell + components; gradeId/curriculumId/classId/streamId
+      // are intentionally NOT carried (you typically rebind these to the new year).
       if (dto.copyFeeStructures && source.feeStructures.length) {
         for (const fs of source.feeStructures) {
           const newFs = await tx.feeStructure.create({
@@ -895,7 +819,6 @@ export class AcademicYearsService {
               isRecurring: fs.isRecurring,
               isOptional: fs.isOptional,
               isAutoBill: fs.isAutoBill,
-              gradeLevel: fs.gradeLevel,
             },
           });
           if (fs.feeComponents.length) {
@@ -928,7 +851,6 @@ export class AcademicYearsService {
           metadata: {
             sourceYearId: source.id,
             copyClasses: dto.copyClasses !== false,
-            copyStreamsConfig: dto.copyStreamsConfig !== false,
             copyTerms: dto.copyTerms !== false,
             copyPeriods: !!dto.copyPeriods,
             copyFeeStructures: !!dto.copyFeeStructures,
