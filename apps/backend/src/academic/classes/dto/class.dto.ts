@@ -1,47 +1,66 @@
 /**
  * @file class.dto.ts
- * @description DTOs for class creation / update. Note: `stream` is a plain string
- *   label (e.g. "North", "Science"), NOT a foreign key — keeps fees normalised.
+ * @module academic/classes/dto
  */
 
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsEnum,
   IsInt,
   IsOptional,
   IsString,
-  Max,
-  MaxLength,
   Min,
-  MinLength,
+  MaxLength,
+  ValidateNested,
 } from 'class-validator';
 import { ClassType } from '@prisma/client';
 
-export class CreateClassDto {
-  @ApiProperty({ example: 'Grade 3A' })
+export class CreateClassStreamDto {
+  @ApiProperty({ example: 'A' })
   @IsString()
-  @MinLength(1)
-  @MaxLength(100)
+  @MaxLength(40)
   name!: string;
 
-  @ApiPropertyOptional({ example: '3A - Blue House' })
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
-  @MaxLength(150)
-  displayName?: string;
-
-  @ApiProperty({ example: 3 })
   @Type(() => Number)
   @IsInt()
-  @Min(0)
-  @Max(15)
-  gradeLevel!: number;
+  @Min(1)
+  capacity?: number;
 
-  @ApiPropertyOptional({ example: 'A' })
+  @ApiPropertyOptional({ example: '#3b82f6' })
   @IsOptional()
   @IsString()
-  @MaxLength(20)
+  @MaxLength(16)
+  color?: string;
+}
+
+export class CreateClassDto {
+  @ApiProperty({ example: 'Grade 1 East' })
+  @IsString()
+  @MaxLength(80)
+  name!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  displayName?: string;
+
+  @ApiProperty({ description: 'Grade FK' })
+  @IsString()
+  gradeId!: string;
+
+  @ApiProperty({ description: 'Academic year FK' })
+  @IsString()
+  academicYearId!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
   section?: string;
 
   @ApiPropertyOptional({ default: 40 })
@@ -49,7 +68,6 @@ export class CreateClassDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(200)
   capacity?: number;
 
   @ApiPropertyOptional({ enum: ClassType, default: ClassType.REGULAR })
@@ -57,32 +75,27 @@ export class CreateClassDto {
   @IsEnum(ClassType)
   classType?: ClassType;
 
-  @ApiPropertyOptional({ example: 'Science' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  @MaxLength(60)
-  stream?: string;
-
-  @ApiPropertyOptional({ example: 'English' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(60)
+  @MaxLength(40)
   language?: string;
-
-  @ApiPropertyOptional({ example: 'CBC' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(60)
-  curriculum?: string;
-
-  @ApiProperty()
-  @IsString()
-  academicYearId!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   classTeacherId?: string;
+
+  @ApiPropertyOptional({
+    type: [CreateClassStreamDto],
+    description:
+      'Optional inline streams. If empty, the class is created streamless.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateClassStreamDto)
+  streams?: CreateClassStreamDto[];
 }
 
 export class UpdateClassDto extends PartialType(CreateClassDto) {}
