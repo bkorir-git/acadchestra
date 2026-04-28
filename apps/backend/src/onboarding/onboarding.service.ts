@@ -1,23 +1,18 @@
 /**
  * @file onboarding.service.ts
  * @module onboarding
- * @description The orchestrator that drives every Admin from "blank school"
- *   to "ready to admit students" in 5 steps.
+ * @description Onboarding orchestrator. Drives Admin from "blank school" to
+ *   "ready to admit students" in a strict 6-step flow. SuperAdmin is NOT a
+ *   tenant operator and receives a safe N/A stub from this service so the
+ *   shared dashboard layout never breaks.
  *
- *   The 6-step checklist (in strict dependency order):
+ *   The 6-step checklist (in dependency order):
  *     1. CURRICULUM       — Adopt template OR create custom (BLOCKING)
- *     2. ACADEMIC_YEAR    — Create year + auto-generated terms       (BLOCKING)
- *     3. CONFIGURATION    — Bulk-write fee, student, guardian rules
- *     4. FIRST_CLASS      — At least one Class exists for current year
- *     5. FIRST_STUDENT    — At least one Student admitted
- *     6. FEE_STRUCTURE    — At least one FeeStructure for current year
- *
- *   The frontend renders the wizard step-by-step using the response from
- *   `GET /onboarding/checklist`. Steps 1-3 are MANDATORY (banner blocks
- *   dashboard); steps 4-6 are recommended but dismissible.
- *
- *   When all 6 steps are complete, the service marks `Tenant.isOnboarded = true`
- *   and the wizard disappears.
+ *     2. ACADEMIC_YEAR    — Create year + auto-generate terms     (BLOCKING)
+ *     3. CONFIGURATION    — Bulk-write fee/student/guardian rules (BLOCKING)
+ *     4. FIRST_CLASS      — At least one Class for current year
+ *     5. FEE_STRUCTURE    — At least one FeeStructure for current year
+ *     6. FIRST_STUDENT    — At least one Student admitted
  */
 
 import { Injectable, NotFoundException } from '@nestjs/common';
@@ -37,12 +32,12 @@ export interface OnboardingStepInfo {
   blocking: boolean;
   done: boolean;
   href: string;
-  /** When false, this step is "ready to do" — the previous blocking step is satisfied. */
+  /** True once the previous BLOCKING step is satisfied. */
   unlocked: boolean;
 }
 
 export interface OnboardingChecklistResponse {
-  tenantId: string;
+  tenantId: string | null;
   isOnboarded: boolean;
   blockingComplete: boolean;
   fullyComplete: boolean;
@@ -51,11 +46,17 @@ export interface OnboardingChecklistResponse {
   totalCount: number;
   currentStep: OnboardingStep | null;
   steps: OnboardingStepInfo[];
+  /** True for SuperAdmin / system users — frontend should hide the wizard. */
+  notApplicable?: boolean;
   context: {
     currentYearId: string | null;
     defaultCurriculumId: string | null;
   };
 }
+
+/** Marker key written when admin saves the Configuration step. */
+const CONFIG_COMPLETED_CATEGORY = 'onboarding';
+const CONFIG_COMPLETED_KEY = 'configurationCompleted';
 
 @Injectable()
 export class OnboardingService {
@@ -65,18 +66,64 @@ export class OnboardingService {
     private readonly config: ConfigService,
   ) {}
 
+  /** Empty stub for non-tenant users (SuperAdmin) — no DB hits. */
+  buildNotApplicable(): OnboardingChecklistResponse {
+    return {
+      tenantId: null,
+      isOnboarded: true,
+      blockingComplete: true,
+      fullyComplete: true,
+      completedCount: 0,
+      blockingCount: 0,
+      totalCount: 0,
+      currentStep: null,
+      steps: [],
+      notApplicable: true,
+      context: { currentYearId: null, defaultCurriculumId: null },
+    };
+  }
+
   // ───────────────────────────── CHECKLIST
-  async getChecklist(tenantId: string): Promise<OnboardingChecklistResponse> {
+  async getChecklist(
+    tenantId: string | null,
+  ): Promise<OnboardingChecklistResponse> {
+    if (!tenantId) return this.buildNotApplicable();
+
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
       select: { id: true, isOnboarded: true },
     });
     if (!tenant) throw new NotFoundException('Tenant not found');
 
+    // Fast path: already onboarded → minimal payload, no expensive scans.
+    if (tenant.isOnboarded) {
+      return {
+        tenantId,
+        isOnboarded: true,
+        blockingComplete: true,
+        fullyComplete: true,
+        completedCount: 0,
+        blockingCount: 0,
+        totalCount: 0,
+        currentStep: null,
+        steps: [],
+        context: {
+          currentYearId:
+            (
+              await this.prisma.academicYear.findFirst({
+                where: { tenantId, isCurrent: true },
+                select: { id: true },
+              })
+            )?.id ?? null,
+          defaultCurriculumId: null,
+        },
+      };
+    }
+
     const [
       curriculum,
       currentYear,
-      configsCount,
+      configurationCompleted,
       classCount,
       studentCount,
       feeStructureCount,
@@ -84,13 +131,18 @@ export class OnboardingService {
       this.prisma.curriculum.findFirst({
         where: { tenantId, isActive: true },
         orderBy: { isDefault: 'desc' },
+        select: { id: true },
       }),
       this.prisma.academicYear.findFirst({
         where: { tenantId, isCurrent: true },
+        select: { id: true },
       }),
-      // Treat configuration as "done" once admin has touched configs (10+ rows).
-      // Defaults are auto-seeded, so they don't count.
-      this.prisma.config.count({ where: { tenantId } }),
+      this.config.getBoolean(
+        tenantId,
+        CONFIG_COMPLETED_CATEGORY,
+        CONFIG_COMPLETED_KEY,
+        false,
+      ),
       this.prisma.class.count({ where: { tenantId } }),
       this.prisma.student.count({ where: { tenantId } }),
       this.prisma.feeStructure.count({ where: { tenantId } }),
@@ -99,7 +151,6 @@ export class OnboardingService {
     const yearId = currentYear?.id ?? null;
     const curriculumId = curriculum?.id ?? null;
 
-    // Steps in evaluation order
     const steps: OnboardingStepInfo[] = [
       {
         key: OnboardingStep.CURRICULUM,
@@ -127,10 +178,7 @@ export class OnboardingService {
         description:
           'Email requirements, admission number format, fee schedules, guardian rules.',
         blocking: true,
-        // We mark configuration done once the admin has explicitly written
-        // ANY config (the defaults seed creates >40 rows already, so we
-        // require a marker config to be set).
-        done: configsCount > 50, // defaults ≈ 45 rows; >50 implies user wrote at least a few
+        done: configurationCompleted,
         href: '/onboarding/configuration',
         unlocked: !!currentYear,
       },
@@ -170,7 +218,7 @@ export class OnboardingService {
     const completedCount = steps.filter((s) => s.done).length;
     const currentStep = steps.find((s) => !s.done && s.unlocked)?.key ?? null;
 
-    // Auto-mark tenant onboarded when blocking is complete (idempotent)
+    // Auto-mark tenant onboarded once blocking is satisfied (idempotent).
     if (blockingComplete && !tenant.isOnboarded) {
       await this.prisma.tenant.update({
         where: { id: tenantId },
@@ -202,8 +250,20 @@ export class OnboardingService {
     };
   }
 
-  // ───────────────────────────── MARK STEP DONE (manual, optional)
+  // ───────────────────────────── MARK STEP DONE
+  /**
+   * Frontend calls this after each blocking step is saved successfully.
+   */
   async markStepDone(tenantId: string, step: OnboardingStep, userId?: string) {
+    if (step === OnboardingStep.CONFIGURATION) {
+      await this.config.set(
+        tenantId,
+        CONFIG_COMPLETED_CATEGORY,
+        CONFIG_COMPLETED_KEY,
+        true,
+        'Set when admin completes the onboarding Configuration sweep',
+      );
+    }
     await this.activity.log({
       action: ActivityAction.ONBOARDING_STEP,
       entityType: ActivityEntityType.ONBOARDING,
@@ -216,7 +276,7 @@ export class OnboardingService {
     return this.getChecklist(tenantId);
   }
 
-  // ───────────────────────────── DISMISS WIZARD (force-complete)
+  // ───────────────────────────── DISMISS WIZARD
   async dismiss(tenantId: string, userId?: string) {
     await this.prisma.tenant.update({
       where: { id: tenantId },
