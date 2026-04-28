@@ -1,14 +1,13 @@
 /**
  * @file onboarding.controller.ts
  * @module onboarding
- * @description Endpoints:
- *   GET   /onboarding/checklist        — current state, unlocked next step
- *   POST  /onboarding/dismiss          — admin force-completes the wizard
- *   POST  /onboarding/step/:step/done  — explicit mark-done (mostly informational)
+ * @description REST endpoints for the onboarding wizard.
  *
- *   The actual mutations (adopt curriculum, create year, write configs) live in
- *   their respective domain modules — `/curriculum/adopt`, `/academic-years`,
- *   `/config/bulk`. This controller only OBSERVES progress.
+ *   Endpoints:
+ *     GET   /onboarding/checklist        — current state, unlocked next step
+ *     POST  /onboarding/dismiss          — admin force-completes the wizard
+ *     POST  /onboarding/step/:step/done  — explicit mark-done (used after
+ *                                          the Configuration sweep saves)
  */
 
 import { Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
@@ -19,6 +18,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { OnboardingService } from './onboarding.service';
+import { isSuperAdmin } from '../common/types/request-actor.type';
 
 @ApiTags('Onboarding')
 @Controller('onboarding')
@@ -28,15 +28,18 @@ export class OnboardingController {
   constructor(private readonly service: OnboardingService) {}
 
   @Get('checklist')
-  @Roles('Admin', 'Principal')
+  @Roles('SuperAdmin', 'Admin', 'Principal')
   @ApiOperation({ summary: 'Get current onboarding state for this tenant' })
   checklist(@CurrentUser() user: any) {
+    if (isSuperAdmin(user) || !user?.tenantId) {
+      return this.service.buildNotApplicable();
+    }
     return this.service.getChecklist(user.tenantId);
   }
 
   @Post('step/:step/done')
   @Roles('Admin', 'Principal')
-  @ApiOperation({ summary: 'Mark a step as done (informational)' })
+  @ApiOperation({ summary: 'Mark a step as done (called after step save)' })
   markDone(@Param('step') step: OnboardingStep, @CurrentUser() user: any) {
     return this.service.markStepDone(user.tenantId, step, user.id);
   }
