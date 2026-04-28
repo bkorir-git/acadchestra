@@ -1965,19 +1965,19 @@ model Notification {
 }
 
 model UploadAsset {
-  id          String         @id @default(cuid())
-  category    UploadCategory
-  fileName    String
-  storedName  String         // randomized name on disk
-  mimeType    String
-  sizeBytes   Int
-  checksum    String?        // sha256
-  storagePath String         // relative to UPLOAD_ROOT
-  publicUrl   String?        // resolved URL when served via /uploads/* or R2
-  status      UploadStatus   @default(ACTIVE)
-  ownerId     String?        // optional User.id who uploaded
-  ownerType   String?        // "USER" | "TENANT" | "SYSTEM"
-  metadata    Json?
+  id            String         @id @default(cuid())
+  category      UploadCategory
+  fileName      String         // original filename from user
+  storedName    String         // randomized name on disk/object storage
+  mimeType      String
+  sizeBytes     Int
+  checksum      String?        // sha256 hex
+  storagePath   String         // opaque key, e.g. "tenants/abc/student_photo/xyz.png"
+  storageDriver String         @default("local") // "local" | "r2" | "s3"
+  status        UploadStatus   @default(ACTIVE)
+  ownerId       String?
+  ownerType     String?        // "USER" | "TENANT" | "SYSTEM"
+  metadata      Json?
 
   tenantId String?
   tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1987,6 +1987,7 @@ model UploadAsset {
 
   @@index([tenantId, category, status])
   @@index([category, status])
+  @@index([storageDriver, status])
   @@map("upload_assets")
 }
 
