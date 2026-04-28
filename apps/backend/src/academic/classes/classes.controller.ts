@@ -1,11 +1,6 @@
 /**
- * @controller ClassesController
- * @description REST endpoints for classes. Exposes stream drill-downs and
- *   per-class student listings to support UI navigation:
- *     /academic/classes?gradeLevel=3&stream=Science  — list by stream
- *     /academic/classes/streams                       — enumerate streams
- *     /academic/classes/:id                           — class detail
- *     /academic/classes/:id/students                  — students in class
+ * @file classes.controller.ts
+ * @module academic/classes
  */
 
 import {
@@ -41,58 +36,20 @@ export class ClassesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('search') search?: string,
-    @Query('gradeLevel') gradeLevel?: string,
+    @Query('gradeId') gradeId?: string,
     @Query('classType') classType?: string,
-    @Query('stream') stream?: string,
+    @Query('streamId') streamId?: string,
     @Query('academicYearId') academicYearId?: string,
   ) {
     return this.service.findAll(user, {
       page: page ? Number(page) : 1,
       limit: limit ? Number(limit) : 20,
       search,
-      gradeLevel: gradeLevel ? Number(gradeLevel) : undefined,
+      gradeId,
       classType,
-      stream,
+      streamId,
       academicYearId,
     });
-  }
-
-  @Get('streams')
-  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'Enumerate distinct streams (optionally per year)' })
-  streams(
-    @CurrentUser() user: any,
-    @Query('academicYearId') academicYearId?: string,
-  ) {
-    return this.service.listStreams(user, academicYearId);
-  }
-
-  @Get('by-stream/:stream')
-  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
-  @ApiOperation({ summary: 'List classes belonging to a given stream label' })
-  byStream(
-    @Param('stream') stream: string,
-    @CurrentUser() user: any,
-    @Query('academicYearId') academicYearId?: string,
-  ) {
-    return this.service.findByStream(user, stream, academicYearId);
-  }
-
-  @Get('streams-for-grade')
-  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher')
-  @ApiOperation({
-    summary: 'Get allowed streams for a given academic year + grade level',
-  })
-  streamsForGrade(
-    @CurrentUser() user: any,
-    @Query('academicYearId') academicYearId: string,
-    @Query('gradeLevel') gradeLevel: string,
-  ) {
-    return this.service.getStreamsForGrade(
-      user.tenantId,
-      academicYearId,
-      Number(gradeLevel),
-    );
   }
 
   @Get(':id')
