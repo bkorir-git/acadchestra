@@ -1,8 +1,6 @@
 /**
  * @file request-actor.type.ts
- * @module common/types
- * @description The shape of `req.user` after the JwtAuthGuard. Centralized so
- *   every service uses the same contract instead of `any` everywhere.
+ * @description Shape of `req.user` after JwtAuthGuard.
  */
 
 export interface RequestActor {
@@ -12,4 +10,12 @@ export interface RequestActor {
   firstName?: string;
   lastName?: string;
   userRoles?: Array<{ role?: { name?: string | null } | null }>;
+}
+
+export function isSuperAdmin(actor: RequestActor): boolean {
+  return !!actor.userRoles?.some((r) => r?.role?.name === 'SuperAdmin');
+}
+
+export function actorDisplayName(a: RequestActor): string {
+  return [a.firstName, a.lastName].filter(Boolean).join(' ') || a.email || 'System';
 }

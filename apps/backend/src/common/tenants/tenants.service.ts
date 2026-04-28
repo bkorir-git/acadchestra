@@ -1,20 +1,34 @@
 import {
-  Injectable,
-  NotFoundException,
-  ConflictException,
   BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { ConfigService } from '../../common/config/config.service';
+import { AdmissionCounterService } from '../../common/admission-counter/admission-counter.service';
+import { EmailService } from '../../common/email/email.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { UpdateTenantDto } from './dto/update-tenant.dto';
+import { SYSTEM_ROLES } from '../../../prisma/seeds/system-roles.seed';
 
 @Injectable()
 export class TenantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(TenantsService.name);
 
-  async create(createTenantDto: CreateTenantDto) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+    private readonly admissionCounter: AdmissionCounterService,
+    private readonly email: EmailService,
+  ) {}
+
+  // ──────────────────────────────────────── CREATE
+  async create(dto: CreateTenantDto, opts?: { loginUrl?: string }) {
     const {
       adminFirstName,
       adminLastName,
@@ -23,95 +37,137 @@ export class TenantsService {
       adminPassword,
       sendWelcomeEmail,
       ...tenantData
-    } = createTenantDto;
+    } = dto;
 
+    // Pre-flight conflict checks
     const existingTenant = await this.prisma.tenant.findFirst({
       where: {
         OR: [
           { domain: tenantData.domain },
-          { subdomain: tenantData.subdomain || undefined },
+          ...(tenantData.subdomain
+            ? [{ subdomain: tenantData.subdomain }]
+            : []),
         ],
       },
     });
-
-    if (existingTenant) {
+    if (existingTenant)
       throw new ConflictException('Domain or subdomain already exists');
-    }
 
     const existingAdmin = await this.prisma.user.findUnique({
-      where: { email: adminEmail },
+      where: { email: adminEmail.toLowerCase().trim() },
     });
-    if (existingAdmin) {
-      throw new ConflictException('Admin email already exists');
-    }
+    if (existingAdmin)
+      throw new ConflictException('Admin email already in use');
 
     const password = adminPassword?.trim() || this.generateTempPassword();
     const hashedPassword = await bcrypt.hash(password, 12);
 
+    // Atomic bootstrap
     const result = await this.prisma.$transaction(async (tx) => {
+      // 1. Tenant
       const tenant = await tx.tenant.create({
-        data: tenantData,
-        include: {
-          _count: {
-            select: {
-              users: true,
-              students: true,
-              teachers: true,
-              classes: true,
-            },
-          },
+        data: {
+          ...tenantData,
+          email: tenantData.email.toLowerCase().trim(),
+          domain: tenantData.domain.toLowerCase().trim(),
+          subdomain: tenantData.subdomain?.toLowerCase().trim(),
+          onboardingStartedAt: new Date(),
         },
       });
 
-      await this.createDefaultRoles(tx, tenant.id);
+      // 2. System roles (incl. Finance)
+      const createdRoles = await Promise.all(
+        SYSTEM_ROLES.map((r) =>
+          tx.role.create({
+            data: {
+              name: r.name,
+              description: r.description,
+              isSystem: true,
+              tenantId: tenant.id,
+            },
+          }),
+        ),
+      );
+      const adminRole = createdRoles.find((r) => r.name === 'Admin')!;
 
+      // 3. Bootstrap Admin user
       const adminUser = await tx.user.create({
         data: {
-          email: adminEmail,
+          email: adminEmail.toLowerCase().trim(),
           password: hashedPassword,
-          firstName: adminFirstName,
-          lastName: adminLastName,
+          firstName: adminFirstName.trim(),
+          lastName: adminLastName.trim(),
           phone: adminPhone,
           tenantId: tenant.id,
           isEmailVerified: false,
+          mustChangePassword: !adminPassword,
         },
       });
-
-      const adminRole = await tx.role.findFirst({
-        where: { tenantId: tenant.id, name: 'Admin' },
+      await tx.userRole.create({
+        data: { userId: adminUser.id, roleId: adminRole.id },
       });
 
-      if (adminRole) {
-        await tx.userRole.create({
-          data: {
-            userId: adminUser.id,
-            roleId: adminRole.id,
-          },
-        });
-      }
+      // 4. TenantSettings
+      await tx.tenantSettings.create({ data: { tenantId: tenant.id } });
 
-      return {
-        ...tenant,
-        bootstrapAdmin: {
-          id: adminUser.id,
-          email: adminEmail,
-          firstName: adminFirstName,
-          lastName: adminLastName,
-          passwordMode: adminPassword
-            ? 'manual_password_set'
-            : 'temporary_password_generated',
-          temporaryPassword: adminPassword ? undefined : password,
-          welcomeEmailRequested: !!sendWelcomeEmail,
-          welcomeEmailStatus: sendWelcomeEmail
-            ? 'pending_integration'
-            : 'not_requested',
-        },
-      };
+      // 5. Configs
+      await this.config.seedDefaultsForTenant(tenant.id, tx);
+
+      // 6. AdmissionCounter
+      await this.admissionCounter.ensure(tenant.id, undefined, tx);
+
+      return { tenant, adminUser, password, generated: !adminPassword };
     });
 
-    return result;
+    // Side-effect: welcome email
+    let emailStatus: 'queued' | 'sent' | 'skipped' | 'failed' = 'skipped';
+    if (sendWelcomeEmail) {
+      try {
+        const r = await this.email.send({
+          to: result.adminUser.email,
+          toName: `${result.adminUser.firstName} ${result.adminUser.lastName}`,
+          tenantId: result.tenant.id,
+          templateCode: 'welcome',
+          variables: {
+            tenant: { name: result.tenant.name, domain: result.tenant.domain },
+            user: {
+              firstName: result.adminUser.firstName,
+              lastName: result.adminUser.lastName,
+              email: result.adminUser.email,
+              temporaryPassword: result.generated
+                ? result.password
+                : '(set manually)',
+            },
+            links: {
+              login: opts?.loginUrl ?? `https://${result.tenant.domain}/login`,
+            },
+          },
+        });
+        emailStatus = r.status === 'SENT' ? 'sent' : 'queued';
+      } catch (err: any) {
+        this.logger.warn(`Welcome email failed: ${err?.message}`);
+        emailStatus = 'failed';
+      }
+    }
+
+    return {
+      ...result.tenant,
+      bootstrapAdmin: {
+        id: result.adminUser.id,
+        email: result.adminUser.email,
+        firstName: result.adminUser.firstName,
+        lastName: result.adminUser.lastName,
+        passwordMode: result.generated
+          ? 'temporary_password_generated'
+          : 'manual_password_set',
+        temporaryPassword: result.generated ? result.password : undefined,
+        welcomeEmailRequested: !!sendWelcomeEmail,
+        welcomeEmailStatus: emailStatus,
+      },
+    };
   }
 
+  // ──────────────────────────────────────── READ
   async findAll(
     filters: {
       page?: number;
@@ -124,7 +180,7 @@ export class TenantsService {
     const { page = 1, limit = 10, search, planType, isActive } = filters;
     const skip = (page - 1) * limit;
 
-    const where: any = {};
+    const where: Prisma.TenantWhereInput = {};
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
@@ -132,7 +188,7 @@ export class TenantsService {
         { email: { contains: search, mode: 'insensitive' } },
       ];
     }
-    if (planType) where.planType = planType;
+    if (planType) where.planType = planType as any;
     if (typeof isActive === 'boolean') where.isActive = isActive;
 
     const [tenants, total] = await Promise.all([
@@ -157,12 +213,7 @@ export class TenantsService {
 
     return {
       data: tenants,
-      meta: {
-        total,
-        page,
-        limit,
-        pages: Math.ceil(total / limit),
-      },
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }
 
@@ -177,38 +228,36 @@ export class TenantsService {
             teachers: true,
             classes: true,
             academicYears: true,
-            subjects: true,
+            curriculums: true,
           },
         },
+        admissionCounter: true,
       },
     });
-
     if (!tenant) throw new NotFoundException('Tenant not found');
     return tenant;
   }
 
-  async update(id: string, updateTenantDto: UpdateTenantDto) {
+  // ──────────────────────────────────────── UPDATE
+  async update(id: string, dto: UpdateTenantDto) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id } });
     if (!tenant) throw new NotFoundException('Tenant not found');
 
-    if (updateTenantDto.domain || updateTenantDto.subdomain) {
-      const existingTenant = await this.prisma.tenant.findFirst({
+    if (dto.domain || dto.subdomain) {
+      const conflict = await this.prisma.tenant.findFirst({
         where: {
           AND: [
             { id: { not: id } },
             {
               OR: [
-                { domain: updateTenantDto.domain || undefined },
-                { subdomain: updateTenantDto.subdomain || undefined },
+                ...(dto.domain ? [{ domain: dto.domain }] : []),
+                ...(dto.subdomain ? [{ subdomain: dto.subdomain }] : []),
               ],
             },
           ],
         },
       });
-
-      if (existingTenant) {
-        throw new ConflictException('Domain or subdomain already exists');
-      }
+      if (conflict) throw new ConflictException('Domain or subdomain in use');
     }
 
     const {
@@ -219,9 +268,9 @@ export class TenantsService {
       adminPassword,
       sendWelcomeEmail,
       ...tenantData
-    } = updateTenantDto as any;
+    } = dto as any;
 
-    const updatedTenant = await this.prisma.tenant.update({
+    const updated = await this.prisma.tenant.update({
       where: { id },
       data: tenantData,
       include: {
@@ -236,6 +285,7 @@ export class TenantsService {
       },
     });
 
+    // Optionally update bootstrap admin
     if (
       adminEmail ||
       adminFirstName ||
@@ -246,7 +296,6 @@ export class TenantsService {
       const adminRole = await this.prisma.role.findFirst({
         where: { tenantId: id, name: 'Admin' },
       });
-
       const currentAdmin = adminRole
         ? await this.prisma.user.findFirst({
             where: {
@@ -255,20 +304,19 @@ export class TenantsService {
             },
           })
         : null;
-
       if (currentAdmin) {
         const userData: any = {};
         if (adminFirstName) userData.firstName = adminFirstName;
         if (adminLastName) userData.lastName = adminLastName;
         if (adminPhone) userData.phone = adminPhone;
         if (adminEmail && adminEmail !== currentAdmin.email) {
-          const existingEmail = await this.prisma.user.findUnique({
+          const existing = await this.prisma.user.findUnique({
             where: { email: adminEmail },
           });
-          if (existingEmail && existingEmail.id !== currentAdmin.id) {
+          if (existing && existing.id !== currentAdmin.id) {
             throw new ConflictException('Admin email already exists');
           }
-          userData.email = adminEmail;
+          userData.email = adminEmail.toLowerCase().trim();
         }
         if (adminPassword) {
           userData.password = await bcrypt.hash(adminPassword, 12);
@@ -282,100 +330,22 @@ export class TenantsService {
       }
     }
 
-    return {
-      ...updatedTenant,
-      adminUpdate: {
-        welcomeEmailRequested: !!sendWelcomeEmail,
-        welcomeEmailStatus: sendWelcomeEmail
-          ? 'pending_integration'
-          : 'not_requested',
-      },
-    };
+    return updated;
   }
 
   async toggleStatus(id: string) {
     const tenant = await this.prisma.tenant.findUnique({ where: { id } });
     if (!tenant) throw new NotFoundException('Tenant not found');
-
     return this.prisma.tenant.update({
       where: { id },
       data: { isActive: !tenant.isActive },
-      include: {
-        _count: {
-          select: {
-            users: true,
-            students: true,
-            teachers: true,
-            classes: true,
-          },
-        },
-      },
     });
-  }
-
-  async remove(id: string, adminPassword: string, adminUserId: string) {
-    const adminUser = await this.prisma.user.findUnique({
-      where: { id: adminUserId },
-    });
-    if (!adminUser) throw new UnauthorizedException('Admin user not found');
-
-    const isPasswordValid = await bcrypt.compare(
-      adminPassword,
-      adminUser.password,
-    );
-    if (!isPasswordValid)
-      throw new UnauthorizedException('Invalid admin password');
-
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: {
-            users: true,
-            students: true,
-            teachers: true,
-          },
-        },
-      },
-    });
-
-    if (!tenant) throw new NotFoundException('Tenant not found');
-
-    if (
-      tenant._count.users > 1 ||
-      tenant._count.students > 0 ||
-      tenant._count.teachers > 0
-    ) {
-      throw new BadRequestException(
-        `Cannot delete tenant with existing data. Found: ${tenant._count.users} users, ${tenant._count.students} students, ${tenant._count.teachers} teachers.`,
-      );
-    }
-
-    await this.prisma.auditLog.create({
-      data: {
-        action: 'DELETE',
-        tableName: 'tenants',
-        recordId: id,
-        oldValues: tenant as any,
-        userId: adminUserId,
-        tenantId: id,
-      },
-    });
-
-    await this.prisma.tenant.delete({ where: { id } });
-
-    return {
-      message: 'Tenant deleted successfully',
-      deletedTenant: {
-        name: tenant.name,
-        domain: tenant.domain,
-        deletedAt: new Date().toISOString(),
-      },
-    };
   }
 
   async getStats(id: string) {
     const tenant = await this.findOne(id);
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
     const [
       totalUsers,
@@ -405,16 +375,10 @@ export class TenantsService {
         _sum: { amount: true },
       }),
       this.prisma.student.count({
-        where: {
-          tenantId: id,
-          createdAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
-        },
+        where: { tenantId: id, createdAt: { gte: thirtyDaysAgo } },
       }),
       this.prisma.user.count({
-        where: {
-          tenantId: id,
-          createdAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
-        },
+        where: { tenantId: id, createdAt: { gte: thirtyDaysAgo } },
       }),
       this.prisma.student.findMany({
         where: { tenantId: id },
@@ -424,11 +388,7 @@ export class TenantsService {
       this.prisma.user.findMany({
         where: { tenantId: id },
         select: {
-          userRoles: {
-            select: {
-              role: { select: { name: true } },
-            },
-          },
+          userRoles: { select: { role: { select: { name: true } } } },
         },
       }),
     ]);
@@ -448,13 +408,13 @@ export class TenantsService {
 
     const roleMap = new Map<string, number>();
     for (const user of usersByRole) {
-      const roles = user.userRoles.map((x) => x.role?.name).filter(Boolean);
+      const roles = user.userRoles
+        .map((x) => x.role?.name)
+        .filter(Boolean) as string[];
       if (roles.length === 0) {
         roleMap.set('Unassigned', (roleMap.get('Unassigned') || 0) + 1);
       } else {
-        for (const role of roles) {
-          roleMap.set(role!, (roleMap.get(role!) || 0) + 1);
-        }
+        for (const r of roles) roleMap.set(r, (roleMap.get(r) || 0) + 1);
       }
     }
 
@@ -494,31 +454,96 @@ export class TenantsService {
     };
   }
 
+  // ──────────────────────────────────────── EXPORT
   async exportTenantData(id: string) {
     const tenant = await this.findOne(id);
+
+    const [students, teachers, classes, academicYears, feePayments] =
+      await Promise.all([
+        this.prisma.student.findMany({ where: { tenantId: id } }),
+        this.prisma.teacher.findMany({ where: { tenantId: id } }),
+        this.prisma.class.findMany({ where: { tenantId: id } }),
+        this.prisma.academicYear.findMany({ where: { tenantId: id } }),
+        this.prisma.feePayment.findMany({ where: { tenantId: id } }),
+      ]);
+
     return {
-      message: 'Export prepared successfully',
-      tenant: { id: tenant.id, name: tenant.name },
       exportedAt: new Date().toISOString(),
-      status: 'prepared',
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        domain: tenant.domain,
+        email: tenant.email,
+        planType: tenant.planType,
+      },
+      counts: {
+        students: students.length,
+        teachers: teachers.length,
+        classes: classes.length,
+        academicYears: academicYears.length,
+        feePayments: feePayments.length,
+      },
+      data: { students, teachers, classes, academicYears, feePayments },
     };
   }
 
-  private async createDefaultRoles(tx: any, tenantId: string) {
-    const defaultRoles = [
-      { name: 'Admin', description: 'Administrative access', isSystem: true },
-      { name: 'Principal', description: 'Principal access', isSystem: true },
-      { name: 'Teacher', description: 'Teacher access', isSystem: true },
-      { name: 'Student', description: 'Student access', isSystem: true },
-      { name: 'Parent', description: 'Parent access', isSystem: true },
-    ];
+  // ──────────────────────────────────────── DELETE
+  async remove(id: string, adminPassword: string, adminUserId: string) {
+    const adminUser = await this.prisma.user.findUnique({
+      where: { id: adminUserId },
+    });
+    if (!adminUser) throw new UnauthorizedException('Admin user not found');
 
-    for (const roleData of defaultRoles) {
-      await tx.role.create({ data: { ...roleData, tenantId } });
+    const valid = await bcrypt.compare(adminPassword, adminUser.password);
+    if (!valid) throw new UnauthorizedException('Invalid admin password');
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id },
+      include: { _count: { select: { students: true, teachers: true } } },
+    });
+    if (!tenant) throw new NotFoundException('Tenant not found');
+
+    if (tenant._count.students > 0 || tenant._count.teachers > 0) {
+      throw new BadRequestException(
+        `Cannot delete tenant with existing data: ${tenant._count.students} students, ${tenant._count.teachers} teachers.`,
+      );
     }
+
+    await this.prisma.auditLog.create({
+      data: {
+        action: 'DELETE',
+        tableName: 'tenants',
+        recordId: id,
+        oldValues: tenant as any,
+        userId: adminUserId,
+        tenantId: id,
+      },
+    });
+
+    await this.prisma.tenant.delete({ where: { id } });
+    return {
+      message: 'Tenant deleted',
+      deletedTenant: { name: tenant.name, domain: tenant.domain },
+    };
   }
 
-  private generateTempPassword() {
-    return Math.random().toString(36).slice(-10) + 'A!';
+  // ──────────────────────────────────────── HELPERS
+  private generateTempPassword(): string {
+    const lower = 'abcdefghjkmnpqrstuvwxyz';
+    const upper = 'ABCDEFGHJKMNPQRSTUVWXYZ';
+    const digits = '23456789';
+    const symbols = '!@#$%^&*';
+    const all = lower + upper + digits + symbols;
+    let pw =
+      upper[Math.floor(Math.random() * upper.length)] +
+      lower[Math.floor(Math.random() * lower.length)] +
+      digits[Math.floor(Math.random() * digits.length)] +
+      symbols[Math.floor(Math.random() * symbols.length)];
+    for (let i = 0; i < 8; i++)
+      pw += all[Math.floor(Math.random() * all.length)];
+    return pw
+      .split('')
+      .sort(() => Math.random() - 0.5)
+      .join('');
   }
 }

@@ -1,3 +1,8 @@
+/**
+ * @file tenants.controller.ts
+ * @description SuperAdmin tenant management endpoints.
+ */
+
 import {
   Controller,
   Get,
@@ -20,11 +25,10 @@ import {
 } from '@nestjs/swagger';
 import { TenantsService } from './tenants.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
-import { UpdateTenantDto } from './dto/update-tenant.dto';
+import { UpdateTenantDto, DeleteTenantDto } from './dto/update-tenant.dto';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
-import { DeleteTenantDto } from './dto/update-tenant.dto';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 
 @ApiTags('Tenants')
@@ -45,9 +49,7 @@ export class TenantsController {
 
   @Get()
   @Roles('SuperAdmin')
-  @ApiOperation({
-    summary: 'Get all tenants with pagination (SuperAdmin only)',
-  })
+  @ApiOperation({ summary: 'List tenants with pagination' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'search', required: false, type: String })
@@ -110,6 +112,13 @@ export class TenantsController {
     return this.tenantsService.getStats(id);
   }
 
+  @Get(':id/export')
+  @Roles('SuperAdmin')
+  @ApiOperation({ summary: 'Export tenant data as JSON' })
+  exportTenantData(@Param('id') id: string) {
+    return this.tenantsService.exportTenantData(id);
+  }
+
   @Delete(':id')
   @Roles('SuperAdmin')
   @ApiOperation({
@@ -124,11 +133,5 @@ export class TenantsController {
     @CurrentUser() user: any,
   ) {
     return this.tenantsService.remove(id, deleteDto.adminPassword, user.id);
-  }
-  @Get(':id/export')
-  @Roles('SuperAdmin')
-  @ApiOperation({ summary: 'Export tenant data (SuperAdmin only)' })
-  exportTenantData(@Param('id') id: string) {
-    return this.tenantsService.exportTenantData(id);
   }
 }

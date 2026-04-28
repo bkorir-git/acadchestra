@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsString,
   IsEmail,
@@ -30,7 +30,7 @@ export class CreateTenantDto {
   @MaxLength(100)
   domain!: string;
 
-  @ApiProperty({ example: 'greenwood', required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(50)
@@ -40,63 +40,63 @@ export class CreateTenantDto {
   @IsEmail()
   email!: string;
 
-  @ApiProperty({ example: '+254700000000', required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   phone?: string;
 
-  @ApiProperty({ example: 'Nairobi, Kenya', required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   address?: string;
 
-  @ApiProperty({ example: 'https://example.com/logo.png', required: false })
+  @ApiPropertyOptional({ description: 'Logo URL or upload asset URL' })
   @IsOptional()
-  @IsUrl()
+  @IsString()
   logo?: string;
 
-  @ApiProperty({ example: 'https://greenwood-high.edu', required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsUrl()
   website?: string;
 
-  @ApiProperty({ enum: PlanType, default: PlanType.LITE })
+  @ApiPropertyOptional({ enum: PlanType, default: PlanType.LITE })
   @IsOptional()
   @IsEnum(PlanType)
   planType?: PlanType;
 
-  @ApiProperty({ example: 500, default: 100 })
+  @ApiPropertyOptional({ default: 100 })
   @IsOptional()
   @IsInt()
   @Min(1)
   maxStudents?: number;
 
-  @ApiProperty({ example: 'Mary' })
+  @ApiProperty()
   @IsString()
   @MaxLength(50)
   adminFirstName!: string;
 
-  @ApiProperty({ example: 'Wanjiku' })
+  @ApiProperty()
   @IsString()
   @MaxLength(50)
   adminLastName!: string;
 
-  @ApiProperty({ example: 'admin@greenwood-high.edu' })
+  @ApiProperty()
   @IsEmail()
   adminEmail!: string;
 
-  @ApiProperty({ example: '+254711111111', required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   adminPhone?: string;
 
-  @ApiProperty({ example: 'Admin123!', required: false, description: 'Optional. If omitted, a temporary password will be generated.' })
+  @ApiPropertyOptional({ description: 'Optional. Generated if omitted.' })
   @IsOptional()
   @IsString()
   @MinLength(8)
   adminPassword?: string;
 
-  @ApiProperty({ example: false, required: false })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
   sendWelcomeEmail?: boolean;
