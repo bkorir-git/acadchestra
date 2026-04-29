@@ -25,10 +25,10 @@ export class CreateStudentClassHistoryDto {
   @IsString()
   academicYearId!: string;
 
-  @ApiPropertyOptional({ description: 'Stream FK (must belong to the class)' })
+  @ApiPropertyOptional({ nullable: true })
   @IsOptional()
   @IsString()
-  streamId?: string;
+  streamId?: string | null;
 
   @ApiProperty()
   @IsDateString()
