@@ -8,6 +8,7 @@ import { AcademicYearsModule } from './academic-years/academic-years.module';
 import { AcademicTermsModule } from './academic-terms/academic-terms.module';
 import { AcademicPeriodsModule } from './academic-periods/academic-periods.module';
 import { ClassesModule } from './classes/classes.module';
+import { StreamsModule } from './streams/streams.module';
 import { SubjectsModule } from './subjects/subjects.module';
 import { StudentClassHistoryModule } from './student-class-history/student-class-history.module';
 import { PromotionsModule } from './promotions/promotions.module';
@@ -21,6 +22,7 @@ import { AcademicDashboardModule } from './academic-dashboard/academic-dashboard
     AcademicTermsModule,
     AcademicPeriodsModule,
     ClassesModule,
+    StreamsModule,
     SubjectsModule,
     StudentClassHistoryModule,
     PromotionsModule,
@@ -33,6 +35,7 @@ import { AcademicDashboardModule } from './academic-dashboard/academic-dashboard
     AcademicTermsModule,
     AcademicPeriodsModule,
     ClassesModule,
+    StreamsModule,
     SubjectsModule,
     StudentClassHistoryModule,
     PromotionsModule,
