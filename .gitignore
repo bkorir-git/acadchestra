@@ -17,3 +17,6 @@ Thumbs.db
 docker-compose.override.yml
 coverage/
 prisma/migrations/
+
+uploads/
+backups/
