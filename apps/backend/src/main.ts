@@ -4,11 +4,14 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import compression from 'compression';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { join } from 'path';
+import * as express from 'express';
 
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
 
   // Security
@@ -17,13 +20,34 @@ async function bootstrap() {
 
   // CORS
   app.enableCors({
-    origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
+    origin: [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://localhost:3002',
+    ],
     credentials: true,
   });
 
   // Global prefix
   const apiPrefix = configService.get('API_PREFIX', 'api/v1');
   app.setGlobalPrefix(apiPrefix);
+
+  const uploadRoot = process.env.UPLOAD_ROOT
+    ? join(process.cwd(), process.env.UPLOAD_ROOT)
+    : join(process.cwd(), 'uploads');
+
+  app.use(
+    process.env.UPLOAD_PUBLIC_MOUNT || '/uploads',
+    express.static(uploadRoot, {
+      immutable: true,
+      maxAge: '7d',
+      fallthrough: false,
+      setHeaders: (res) => {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      },
+    }),
+  );
 
   // Global validation pipe
   app.useGlobalPipes(
@@ -45,15 +69,17 @@ async function bootstrap() {
       .setVersion('1.0')
       .addBearerAuth()
       .build();
-    
+
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('docs', app, document);
   }
 
   const port = configService.get('PORT', 3001);
   await app.listen(port);
-  
-  console.log(`🚀 Acadchestra API is running on: http://localhost:${port}/${apiPrefix}`);
+
+  console.log(
+    `🚀 Acadchestra API is running on: http://localhost:${port}/${apiPrefix}`,
+  );
   console.log(`📚 API Documentation: http://localhost:${port}/docs`);
 }
 
