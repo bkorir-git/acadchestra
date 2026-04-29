@@ -33,6 +33,13 @@ import { AdmissionStrategy, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ConfigService } from '../config/config.service';
 
+interface LiveFormatOptions {
+  strategy: AdmissionStrategy;
+  prefix: string;
+  yearPrefix: string | null;
+  paddingLength: number;
+}
+
 interface InitOptions {
   prefix?: string;
   yearPrefix?: string;
@@ -40,8 +47,6 @@ interface InitOptions {
   strategy?: AdmissionStrategy;
   startAt?: number;
 }
-
-interface UpdateOptions extends InitOptions {}
 
 @Injectable()
 export class AdmissionCounterService {
@@ -52,56 +57,48 @@ export class AdmissionCounterService {
     private readonly config: ConfigService,
   ) {}
 
-  // ──────────────────────────────────────────────── ENSURE
-  /** Create the counter for a tenant if missing. Reads defaults from Config. */
+  private async getLiveFormatOptions(
+    tenantId: string,
+  ): Promise<LiveFormatOptions> {
+    const cfg = await this.config.getCategory<{
+      admissionNumberStrategy?: string;
+      admissionNumberPrefix?: string;
+      admissionNumberPadding?: number;
+    }>(tenantId, 'student');
+
+    const strategy = (cfg.admissionNumberStrategy ??
+      'YEAR_PREFIXED') as AdmissionStrategy;
+    const prefix = cfg.admissionNumberPrefix ?? '';
+    const padding = cfg.admissionNumberPadding ?? 4;
+    const yearPrefix =
+      strategy === AdmissionStrategy.YEAR_PREFIXED
+        ? String(new Date().getFullYear())
+        : null;
+
+    return { strategy, prefix, yearPrefix, paddingLength: padding };
+  }
+
+  // ─── ENSURE
   async ensure(
     tenantId: string,
     init?: InitOptions,
     tx?: Prisma.TransactionClient,
   ) {
     const client = tx ?? this.prisma;
+
     const existing = await client.admissionCounter.findUnique({
       where: { tenantId },
     });
     if (existing) return existing;
 
-    const strategy =
-      init?.strategy ??
-      ((await this.config.getString(
-        tenantId,
-        'student',
-        'admissionNumberStrategy',
-        'YEAR_PREFIXED',
-      )) as AdmissionStrategy);
-    const prefix =
-      init?.prefix ??
-      (await this.config.getString(
-        tenantId,
-        'student',
-        'admissionNumberPrefix',
-        '',
-      ));
-    const paddingLength =
-      init?.paddingLength ??
-      (await this.config.getNumber(
-        tenantId,
-        'student',
-        'admissionNumberPadding',
-        4,
-      ));
-    const yearPrefix =
-      init?.yearPrefix ??
-      (strategy === AdmissionStrategy.YEAR_PREFIXED
-        ? String(new Date().getFullYear())
-        : undefined);
-
+    const live = await this.getLiveFormatOptions(tenantId);
     return client.admissionCounter.create({
       data: {
         tenantId,
-        strategy,
-        prefix,
-        paddingLength,
-        yearPrefix: yearPrefix ?? null,
+        strategy: init?.strategy ?? live.strategy,
+        prefix: init?.prefix ?? live.prefix,
+        paddingLength: init?.paddingLength ?? live.paddingLength,
+        yearPrefix: init?.yearPrefix ?? live.yearPrefix,
         currentSequence: init?.startAt ?? 0,
       },
     });
@@ -110,15 +107,13 @@ export class AdmissionCounterService {
   // ──────────────────────────────────────────────── PEEK
   /** Compute what the NEXT admission number would be, WITHOUT incrementing. */
   async peekNext(tenantId: string): Promise<string> {
-    const counter = await this.prisma.admissionCounter.findUnique({
+    let counter = await this.prisma.admissionCounter.findUnique({
       where: { tenantId },
     });
-    if (!counter) {
-      // Auto-init on first peek so the UI can preview safely
-      const created = await this.ensure(tenantId);
-      return this.format(created.currentSequence + 1, created);
-    }
-    return this.format(counter.currentSequence + 1, counter);
+    if (!counter) counter = await this.ensure(tenantId);
+
+    const live = await this.getLiveFormatOptions(tenantId);
+    return this.format(counter.currentSequence + 1, live);
   }
 
   // ──────────────────────────────────────────────── ISSUE (race-safe)
@@ -131,62 +126,48 @@ export class AdmissionCounterService {
    */
   async issueNext(
     tenantId: string,
-    opts?: { tx?: Prisma.TransactionClient; year?: number },
+    opts?: { tx?: Prisma.TransactionClient },
   ): Promise<string> {
     const tx = opts?.tx ?? this.prisma;
 
-    // Use $queryRaw for the SELECT FOR UPDATE — Prisma doesn't expose locks natively
     const locked = await tx.$queryRaw<
-      Array<{
-        id: string;
-        prefix: string;
-        yearPrefix: string | null;
-        currentSequence: number;
-        paddingLength: number;
-        strategy: AdmissionStrategy;
-      }>
+      Array<{ id: string; currentSequence: number }>
     >`
-      SELECT id, prefix, "yearPrefix", "currentSequence", "paddingLength", strategy
+      SELECT id, "currentSequence"
       FROM admission_counters
       WHERE "tenantId" = ${tenantId}
       FOR UPDATE
     `;
 
     if (!locked.length) {
-      // Auto-init if the tenant somehow doesn't have one yet.
-      // Note: outside the lock, but since no one else has issued yet,
-      // there's no race here.
       await this.ensure(tenantId);
       return this.issueNext(tenantId, opts);
     }
 
-    const counter = locked[0];
-    const nextSeq = counter.currentSequence + 1;
-    const yearPrefix =
-      counter.strategy === AdmissionStrategy.YEAR_PREFIXED
-        ? (counter.yearPrefix ?? String(opts?.year ?? new Date().getFullYear()))
-        : counter.yearPrefix;
-
-    const admissionNumber = this.format(nextSeq, {
-      ...counter,
-      yearPrefix,
-    });
+    const { id, currentSequence } = locked[0];
+    const nextSeq = currentSequence + 1;
+    const live = await this.getLiveFormatOptions(tenantId);
+    const admissionNumber = this.format(nextSeq, live);
 
     await tx.admissionCounter.update({
-      where: { id: counter.id },
+      where: { id },
       data: {
         currentSequence: nextSeq,
         lastIssuedAt: new Date(),
-        yearPrefix: yearPrefix ?? null,
+        // Keep the counter row in sync for backwards-compat reads,
+        // but the FORMAT call above already used live values.
+        strategy: live.strategy,
+        prefix: live.prefix,
+        yearPrefix: live.yearPrefix,
+        paddingLength: live.paddingLength,
       },
     });
 
     return admissionNumber;
   }
 
-  // ──────────────────────────────────────────────── UPDATE config
-  /** Change strategy / prefix / padding. Forbids decreasing currentSequence. */
-  async update(tenantId: string, dto: UpdateOptions) {
+  // ─── UPDATE (manual override — bumps sequence only)
+  async update(tenantId: string, dto: InitOptions) {
     const counter = await this.prisma.admissionCounter.findUnique({
       where: { tenantId },
     });
@@ -197,6 +178,37 @@ export class AdmissionCounterService {
         `startAt cannot be lower than currentSequence (${counter.currentSequence})`,
       );
     }
+
+    // We also write to Config so the Settings UI stays consistent.
+    const writes: Promise<unknown>[] = [];
+    if (dto.strategy)
+      writes.push(
+        this.config.set(
+          tenantId,
+          'student',
+          'admissionNumberStrategy',
+          dto.strategy,
+        ),
+      );
+    if (dto.prefix !== undefined)
+      writes.push(
+        this.config.set(
+          tenantId,
+          'student',
+          'admissionNumberPrefix',
+          dto.prefix,
+        ),
+      );
+    if (dto.paddingLength !== undefined)
+      writes.push(
+        this.config.set(
+          tenantId,
+          'student',
+          'admissionNumberPadding',
+          dto.paddingLength,
+        ),
+      );
+    await Promise.all(writes);
 
     return this.prisma.admissionCounter.update({
       where: { id: counter.id },
@@ -239,22 +251,13 @@ export class AdmissionCounterService {
     return counter;
   }
 
-  // ──────────────────────────────────────────────── FORMAT
-  private format(
-    sequence: number,
-    counter: {
-      prefix: string;
-      yearPrefix: string | null;
-      paddingLength: number;
-      strategy: AdmissionStrategy;
-    },
-  ): string {
-    const padded = String(sequence).padStart(counter.paddingLength, '0');
-    switch (counter.strategy) {
+  private format(sequence: number, opts: LiveFormatOptions): string {
+    const padded = String(sequence).padStart(opts.paddingLength, '0');
+    switch (opts.strategy) {
       case AdmissionStrategy.YEAR_PREFIXED:
-        return `${counter.yearPrefix ?? new Date().getFullYear()}${padded}`;
+        return `${opts.yearPrefix ?? new Date().getFullYear()}${padded}`;
       case AdmissionStrategy.CUSTOM_PREFIXED:
-        return `${counter.prefix}${padded}`;
+        return `${opts.prefix}${padded}`;
       case AdmissionStrategy.SEQUENTIAL:
       default:
         return padded;
