@@ -31,9 +31,9 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { ActivityService } from '../common/activity/activity.service';
-import { LocalStorageProvider } from '../common/uploads/storage/local-storage.provider';
 import { R2StorageProvider } from './storage/r2-storage.provider';
 import { CreateBackupDto, UpdateBackupPolicyDto } from './dto/backups.dto';
+import { StorageService } from '../common/uploads/storage/storage.service';
 
 @Injectable()
 export class BackupsService {
@@ -42,7 +42,7 @@ export class BackupsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activity: ActivityService,
-    private readonly storage: LocalStorageProvider,
+    private readonly storage: StorageService,
     private readonly r2: R2StorageProvider,
   ) {}
 
