@@ -1,24 +1,17 @@
 /**
- * @service AttendanceService
- * @description Core service for the Attendance module. Owns:
+ * @file attendance.service.ts
+ * @module attendance
+ * @description Attendance domain — v2-aligned.
  *
- *   1. Session lifecycle (open/upsert → mark → finalize → lock)
- *   2. Record batch upsert with aggregate maintenance
- *   3. Class / student / tenant-level analytics:
- *       - Today snapshot
- *       - Daily trend (for dashboard chart)
- *       - Class breakdown (grade / stream)
- *       - Per-student summary (rate, streaks)
- *       - CSV-ready session report
- *   4. Teacher view — "my classes today"
+ *   v2 changes vs legacy:
+ *     - Class.gradeLevel:Int        → Class.grade { name, levelOrder }
+ *     - Class.stream:String         → Class.streams[] (Stream[]) +
+ *                                     Student.streamId (FK to Stream)
+ *     - Student.user                → OPTIONAL (User?) — guard everywhere.
  *
- *   Design decisions:
- *     - Session uniqueness = (classId, sessionDate, type, subjectId).
- *       Re-opening the same register is a no-op that returns the existing row.
- *     - `sessionDate` is DATE-only. All times are normalized to UTC midnight.
- *     - Marks are idempotent. Aggregates are recomputed from the records table
- *       (source-of-truth) so we never drift.
- *     - Listing endpoints are paginated and index-friendly.
+ *   Surface unchanged: open → mark → finalize → lock, plus rollups.
+ *
+ * @commit fix(attendance): align with v2 schema (gradeId, streamId, optional user)
  */
 
 import {
@@ -73,7 +66,20 @@ export class AttendanceService {
     return !!a.userRoles?.some((r) => names.includes(r?.role?.name ?? ''));
   }
 
-  /** Normalize a date input to UTC midnight (DATE column). */
+  /** Best-effort full name for a student even when User is missing. */
+  private studentDisplayName(s: {
+    firstName?: string | null;
+    lastName?: string | null;
+    user?: { firstName?: string | null; lastName?: string | null } | null;
+  }): string {
+    const fromStudent = [s.firstName, s.lastName].filter(Boolean).join(' ');
+    if (fromStudent) return fromStudent;
+    if (s.user) {
+      return [s.user.firstName, s.user.lastName].filter(Boolean).join(' ');
+    }
+    return 'Unknown';
+  }
+
   private toDateOnly(input?: string | Date): Date {
     const d = input ? new Date(input) : new Date();
     return new Date(
@@ -87,18 +93,6 @@ export class AttendanceService {
     return d;
   }
 
-  private daysBetween(a: Date, b: Date): number {
-    return Math.max(
-      0,
-      Math.round((b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24)),
-    );
-  }
-
-  /**
-   * Assert this actor is allowed to operate on the class.
-   * Admin/Principal/SuperAdmin can always. Teacher must be classTeacher OR
-   * teach a subject in the class.
-   */
   private async assertCanOperate(classId: string, actor: RequestActor) {
     const cls = await this.prisma.class.findFirst({
       where: { id: classId, tenantId: actor.tenantId },
@@ -261,10 +255,10 @@ export class AttendanceService {
             id: true,
             name: true,
             displayName: true,
-            gradeLevel: true,
-            stream: true,
             capacity: true,
             academicYearId: true,
+            grade: { select: { id: true, name: true, levelOrder: true } },
+            streams: { select: { id: true, name: true } },
             classTeacher: {
               include: {
                 user: { select: { firstName: true, lastName: true } },
@@ -287,6 +281,7 @@ export class AttendanceService {
                     gender: true,
                   },
                 },
+                stream: { select: { id: true, name: true } },
               },
             },
           },
@@ -316,7 +311,6 @@ export class AttendanceService {
       }),
     };
 
-    // Teachers see only their own classes
     if (
       !this.hasRole(actor, 'SuperAdmin', 'Admin', 'Principal') &&
       actor.teacher?.id
@@ -335,7 +329,12 @@ export class AttendanceService {
         orderBy: [{ sessionDate: 'desc' }, { createdAt: 'desc' }],
         include: {
           class: {
-            select: { id: true, name: true, gradeLevel: true, stream: true },
+            select: {
+              id: true,
+              name: true,
+              grade: { select: { name: true } },
+              streams: { select: { name: true } },
+            },
           },
           academicTerm: { select: { id: true, name: true } },
         },
@@ -349,7 +348,6 @@ export class AttendanceService {
     };
   }
 
-  /** Upsert a batch of records on a session. Triggers aggregate recomputation. */
   async markSession(id: string, dto: MarkSessionDto, actor: RequestActor) {
     const session = await this.prisma.attendanceSession.findFirst({
       where: { id, tenantId: actor.tenantId },
@@ -369,7 +367,6 @@ export class AttendanceService {
 
     const defaultPresent = dto.defaultPresent ?? true;
 
-    // Validate students belong to this class
     const studentIds = [...new Set(dto.entries.map((e) => e.studentId))];
     const validCount = await this.prisma.student.count({
       where: {
@@ -385,7 +382,6 @@ export class AttendanceService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      // Upsert each explicit entry
       for (const e of dto.entries) {
         await tx.attendanceRecord.upsert({
           where: {
@@ -408,7 +404,6 @@ export class AttendanceService {
         });
       }
 
-      // Optional default-present fill for students not explicitly listed
       if (defaultPresent) {
         const roster = await tx.student.findMany({
           where: {
@@ -619,6 +614,7 @@ export class AttendanceService {
             gender: true,
           },
         },
+        stream: { select: { id: true, name: true } },
       },
       orderBy: [{ rollNumber: 'asc' }],
     });
@@ -635,14 +631,18 @@ export class AttendanceService {
           id: s.id,
           rollNumber: s.rollNumber,
           admissionNumber: s.admissionNumber,
-          user: s.user,
+          // Prefer student's own profile, fall back to user link
+          firstName: s.firstName ?? s.user?.firstName ?? '',
+          lastName: s.lastName ?? s.user?.lastName ?? '',
+          avatar: s.user?.avatar ?? s.photoUrl ?? null,
+          gender: s.gender ?? s.user?.gender ?? null,
+          stream: s.stream,
           status: AttendanceStatus.PRESENT,
         })),
       },
     };
   }
 
-  /** Class attendance stats for a window. */
   async getClassStats(
     classId: string,
     actor: RequestActor,
@@ -805,7 +805,13 @@ export class AttendanceService {
         absentCount: true,
         lateCount: true,
         excusedCount: true,
-        class: { select: { id: true, name: true, gradeLevel: true } },
+        class: {
+          select: {
+            id: true,
+            name: true,
+            grade: { select: { name: true, levelOrder: true } },
+          },
+        },
       },
     });
 
@@ -840,9 +846,6 @@ export class AttendanceService {
     };
   }
 
-  /**
-   * Daily trend for the dashboard chart (fills missing days with zeros).
-   */
   async dashboardTrend(actor: RequestActor, q: StatsQueryDto = {}) {
     const days = q.days ?? 14;
     const to = this.toDateOnly(q.to);
@@ -926,6 +929,8 @@ export class AttendanceService {
       },
       include: {
         academicYear: { select: { id: true, name: true, isCurrent: true } },
+        grade: { select: { id: true, name: true, levelOrder: true } },
+        streams: { select: { id: true, name: true } },
         _count: { select: { students: true } },
         attendanceSessions: {
           where: {
@@ -943,7 +948,7 @@ export class AttendanceService {
           take: 1,
         },
       },
-      orderBy: [{ gradeLevel: 'asc' }, { name: 'asc' }],
+      orderBy: [{ name: 'asc' }],
     });
 
     return {
@@ -952,8 +957,11 @@ export class AttendanceService {
         id: c.id,
         name: c.name,
         displayName: c.displayName,
-        gradeLevel: c.gradeLevel,
-        stream: c.stream,
+        gradeName: c.grade.name,
+        gradeLevelOrder: c.grade.levelOrder,
+        // First stream — for legacy "stream" callers; full list available too
+        stream: c.streams[0]?.name ?? null,
+        streams: c.streams,
         academicYear: c.academicYear,
         studentCount: c._count.students,
         isClassTeacher: c.classTeacherId === teacherId,
@@ -964,10 +972,6 @@ export class AttendanceService {
 
   // ─────────────────── REPORT / EXPORT ──────────────────────
 
-  /**
-   * CSV-ready matrix: rows = students, cols = session dates.
-   * Returns a lean JSON the frontend can transform to CSV/XLSX.
-   */
   async classReport(
     classId: string,
     actor: RequestActor,
@@ -1005,11 +1009,12 @@ export class AttendanceService {
     });
 
     const matrix = students.map((s) => {
+      const name = this.studentDisplayName(s);
       const row: Record<string, string> = {
         studentId: s.id,
-        rollNumber: s.rollNumber,
+        rollNumber: s.rollNumber ?? '',
         admissionNumber: s.admissionNumber,
-        name: `${s.user.firstName} ${s.user.lastName}`,
+        name,
       };
       let present = 0;
       let counted = 0;
