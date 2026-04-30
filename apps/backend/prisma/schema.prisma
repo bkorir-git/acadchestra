@@ -339,6 +339,7 @@ enum ActivityEntityType {
   ONBOARDING
   UPLOAD_ASSET
   BACKUP_JOB
+  BACKUP_POLICY
 }
 
 enum PromotionPlanStatus {
