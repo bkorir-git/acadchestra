@@ -1,9 +1,8 @@
 /**
  * @service PromotionPlanService
  * @description 3-step promotion engine: PLAN → REVIEW → APPROVE → EXECUTE.
- *   - `list()` is paginated
- *   - `findOne(id, entryFilters)` returns the plan with PAGINATED entries
- *     so the UI can handle thousands of students without blowing up
+ *   Fully refactored for schema v2: works in `gradeId` / `streamId` space,
+ *   curriculum-aware. No legacy `gradeLevel` / `stream` (string) usage.
  */
 import {
   BadRequestException,
@@ -35,7 +34,9 @@ import {
   UpdatePlanEntryDto,
 } from './dto/promotion-plan.dto';
 import {
+  GradeRef,
   SourceStudent,
+  StreamRef,
   TargetClass,
   balancedDistribution,
   customMapping,
@@ -43,6 +44,21 @@ import {
   preserveStream,
   validateFinalMapping,
 } from './promotion-strategies';
+
+type PlanWithEntries = Prisma.PromotionPlanGetPayload<{
+  include: { entries: true };
+}>;
+
+type PlanEntry = PlanWithEntries['entries'][number];
+
+interface ExecutionResults {
+  promoted: number;
+  graduated: number;
+  retained: number;
+  skipped: number;
+  failed: number;
+  errors: Array<{ entryId: string; error: string }>;
+}
 
 @Injectable()
 export class PromotionPlanService {
@@ -78,17 +94,78 @@ export class PromotionPlanService {
     if (toYear.id === fromYear.id)
       throw new BadRequestException('From and To years must differ');
 
+    // ── Load target year classes (catalogue) ───────────────────────
+    const targetClassRaw = await this.prisma.class.findMany({
+      where: { tenantId: actor.tenantId, academicYearId: toYear.id },
+      include: {
+        grade: {
+          select: {
+            id: true,
+            name: true,
+            displayName: true,
+            levelOrder: true,
+            curriculumId: true,
+          },
+        },
+        streams: {
+          select: { id: true, name: true, capacity: true },
+        },
+        _count: { select: { students: true } },
+      },
+    });
+
+    // ── Load grades for ladder lookup ──────────────────────────────
+    const grades = await this.prisma.grade.findMany({
+      where: { tenantId: actor.tenantId },
+      select: {
+        id: true,
+        levelOrder: true,
+        curriculumId: true,
+      },
+      orderBy: { levelOrder: 'asc' },
+    });
+
+    const gradesByCurriculum: Record<string, GradeRef[]> = {};
+    for (const g of grades) {
+      if (!gradesByCurriculum[g.curriculumId]) {
+        gradesByCurriculum[g.curriculumId] = [];
+      }
+      gradesByCurriculum[g.curriculumId].push({
+        id: g.id,
+        levelOrder: g.levelOrder,
+        curriculumId: g.curriculumId,
+      });
+    }
+
+    // ── Build TargetClass[] for strategies ─────────────────────────
+    const targetClasses: TargetClass[] = targetClassRaw.map((c) => ({
+      id: c.id,
+      name: c.name,
+      capacity: c.capacity,
+      currentCount: c._count.students,
+      grade: {
+        id: c.grade.id,
+        levelOrder: c.grade.levelOrder,
+        curriculumId: c.grade.curriculumId,
+      },
+      streams: c.streams.map<StreamRef>((s) => ({
+        id: s.id,
+        name: s.name,
+        capacity: s.capacity,
+        currentCount: 0, // strategies bump this in-memory as they distribute
+      })),
+    }));
+
+    // Decide strategy. If target year has zero streams across ALL classes,
+    // auto-switch to GRADE_ONLY (admin can still force CUSTOM_MAPPING).
     const strategyRaw = dto.strategy ?? 'PRESERVE_STREAM';
-    const streamsConfig =
-      (toYear.streamsByGrade as Record<string, string[]> | null) ?? null;
-    const allStreamless =
-      streamsConfig &&
-      Object.values(streamsConfig).every((arr) => arr.length === 0);
+    const targetHasAnyStream = targetClasses.some((c) => c.streams.length > 0);
     const strategy: PromotionStrategy =
-      allStreamless && strategyRaw !== 'CUSTOM_MAPPING'
+      !targetHasAnyStream && strategyRaw !== 'CUSTOM_MAPPING'
         ? PromotionStrategy.GRADE_ONLY
         : (strategyRaw as PromotionStrategy);
 
+    // ── Load students to plan for ──────────────────────────────────
     const students = await this.prisma.student.findMany({
       where: {
         tenantId: actor.tenantId,
@@ -99,26 +176,25 @@ export class PromotionPlanService {
           : {}),
         class: { academicYearId: fromYear.id },
       },
-      include: { class: true },
+      include: {
+        class: {
+          include: {
+            grade: {
+              select: {
+                id: true,
+                levelOrder: true,
+                curriculumId: true,
+              },
+            },
+          },
+        },
+        stream: {
+          select: { id: true, name: true },
+        },
+      },
     });
 
-    const targetClassRaw = await this.prisma.class.findMany({
-      where: { tenantId: actor.tenantId, academicYearId: toYear.id },
-      include: { _count: { select: { students: true } } },
-    });
-    const targetClasses: TargetClass[] = targetClassRaw.map((c) => ({
-      id: c.id,
-      name: c.name,
-      gradeLevel: c.gradeLevel,
-      stream: c.stream,
-      capacity: c.capacity,
-      currentCount: c._count.students,
-    }));
-    const terminalGrade = Math.max(
-      ...targetClassRaw.map((c) => c.gradeLevel),
-      ...students.map((s) => s.class.gradeLevel + 1),
-    );
-    const ctx = { targetClasses, streamsByGrade: streamsConfig, terminalGrade };
+    const ctx = { targetClasses, gradesByCurriculum };
 
     const pickFn =
       strategy === PromotionStrategy.PRESERVE_STREAM
@@ -133,8 +209,10 @@ export class PromotionPlanService {
       const src: SourceStudent = {
         id: s.id,
         classId: s.classId,
-        gradeLevel: s.class.gradeLevel,
-        stream: s.class.stream,
+        gradeId: s.class.gradeId,
+        curriculumId: s.class.grade.curriculumId,
+        gradeLevelOrder: s.class.grade.levelOrder,
+        streamName: s.stream?.name ?? null,
         className: s.class.name,
       };
       const res = pickFn(src, ctx);
@@ -142,18 +220,19 @@ export class PromotionPlanService {
       return {
         studentId: s.id,
         fromClassId: s.classId,
-        fromStream: s.class.stream,
+        fromStreamId: s.streamId,
         suggestedClassId: res.suggestedClassId,
-        suggestedStream: res.suggestedStream,
+        suggestedStreamId: res.suggestedStreamId,
         action: res.action,
         status: hasConflict
           ? PromotionPlanEntryStatus.CONFLICTED
           : PromotionPlanEntryStatus.PENDING,
-        warnings: res.warnings as any,
-        conflicts: res.conflicts as any,
+        warnings: (res.warnings ?? []) as unknown as Prisma.InputJsonValue,
+        conflicts: (res.conflicts ?? []) as unknown as Prisma.InputJsonValue,
         tenantId: actor.tenantId,
       };
     });
+
     const stats = summariseEntries(entryPayloads);
 
     const plan = await this.prisma.$transaction(async (tx) => {
@@ -175,11 +254,11 @@ export class PromotionPlanService {
           createdById: actor.id,
           summary: {
             strategy,
+            requestedStrategy: strategyRaw,
             autoSwitchedToGradeOnly:
               strategy === PromotionStrategy.GRADE_ONLY &&
               strategyRaw !== 'GRADE_ONLY',
-            terminalGrade,
-          },
+          } as Prisma.InputJsonValue,
         },
       });
       if (entryPayloads.length) {
@@ -195,7 +274,7 @@ export class PromotionPlanService {
           tenantId: actor.tenantId,
           userId: actor.id,
           message: `${this.actorName(actor)} generated promotion plan "${created.name}"`,
-          metadata: { strategy, ...stats },
+          metadata: { strategy, ...stats } as Prisma.InputJsonValue,
         },
         tx,
       );
@@ -225,7 +304,7 @@ export class PromotionPlanService {
     const limit = Math.min(100, Math.max(1, filters.limit ?? 10));
     const skip = (page - 1) * limit;
 
-    const where = {
+    const where: Prisma.PromotionPlanWhereInput = {
       tenantId: actor.tenantId,
       status: filters.status,
       fromAcademicYearId: filters.fromAcademicYearId,
@@ -286,26 +365,33 @@ export class PromotionPlanService {
       this.prisma.promotionPlanEntry.count({ where }),
     ]);
 
-    // Hydrate names
     const studentIds = entries.map((e) => e.studentId);
     const classIds = [
       ...new Set(
         entries.flatMap((e) =>
-          [e.fromClassId, e.suggestedClassId, e.overrideClassId].filter(
-            Boolean,
-          ),
+          [
+            e.fromClassId,
+            e.suggestedClassId,
+            e.overrideClassId,
+            e.finalClassId,
+          ].filter(Boolean),
+        ),
+      ),
+    ] as string[];
+    const streamIds = [
+      ...new Set(
+        entries.flatMap((e) =>
+          [
+            e.fromStreamId,
+            e.suggestedStreamId,
+            e.overrideStreamId,
+            e.finalStreamId,
+          ].filter(Boolean),
         ),
       ),
     ] as string[];
 
-    type ClassLookupItem = {
-      id: string;
-      name: string;
-      gradeLevel: number;
-      stream: string | null;
-    };
-
-    const [students, classes] = await Promise.all([
+    const [students, classes, streams] = await Promise.all([
       this.prisma.student.findMany({
         where: { id: { in: studentIds } },
         include: {
@@ -322,14 +408,47 @@ export class PromotionPlanService {
       classIds.length
         ? this.prisma.class.findMany({
             where: { id: { in: classIds } },
-            select: { id: true, name: true, gradeLevel: true, stream: true },
+            select: {
+              id: true,
+              name: true,
+              displayName: true,
+              gradeId: true,
+              grade: {
+                select: {
+                  id: true,
+                  name: true,
+                  displayName: true,
+                  levelOrder: true,
+                },
+              },
+            },
           })
-        : Promise.resolve([] as ClassLookupItem[]),
+        : Promise.resolve([] as Awaited<
+            ReturnType<typeof this.prisma.class.findMany>
+          >),
+      streamIds.length
+        ? this.prisma.stream.findMany({
+            where: { id: { in: streamIds } },
+            select: {
+              id: true,
+              name: true,
+              classId: true,
+              color: true,
+            },
+          })
+        : Promise.resolve([] as Awaited<
+            ReturnType<typeof this.prisma.stream.findMany>
+          >),
     ]);
-    const studentMap = new Map(students.map((s) => [s.id, s]));
-    const classMap = classes.reduce<Map<string, ClassLookupItem>>(
-      (map, c) => map.set(c.id, c),
-      new Map<string, ClassLookupItem>(),
+
+    const studentMap = new Map(
+      students.map((s): readonly [string, (typeof students)[number]] => [s.id, s]),
+    );
+    const classMap = new Map(
+      classes.map((c): readonly [string, (typeof classes)[number]] => [c.id, c]),
+    );
+    const streamMap = new Map(
+      streams.map((s): readonly [string, (typeof streams)[number]] => [s.id, s]),
     );
 
     return {
@@ -345,6 +464,15 @@ export class PromotionPlanService {
           overrideClass: e.overrideClassId
             ? classMap.get(e.overrideClassId)
             : null,
+          finalClass: e.finalClassId ? classMap.get(e.finalClassId) : null,
+          fromStream: e.fromStreamId ? streamMap.get(e.fromStreamId) : null,
+          suggestedStream: e.suggestedStreamId
+            ? streamMap.get(e.suggestedStreamId)
+            : null,
+          overrideStream: e.overrideStreamId
+            ? streamMap.get(e.overrideStreamId)
+            : null,
+          finalStream: e.finalStreamId ? streamMap.get(e.finalStreamId) : null,
         })),
         meta: { total, page, limit, pages: Math.ceil(total / limit) },
       },
@@ -377,42 +505,146 @@ export class PromotionPlanService {
     });
     if (!entry) throw new NotFoundException('Entry not found');
 
-    if (dto.overrideClassId) {
-      const target = await this.prisma.class.findFirst({
-        where: {
-          id: dto.overrideClassId,
-          tenantId: actor.tenantId,
-          academicYearId: plan.toAcademicYearId,
-        },
-        include: { academicYear: { select: { streamsByGrade: true } } },
-      });
-      if (!target)
-        throw new BadRequestException(
-          'Override class does not belong to target year',
+    let resolvedOverrideClassId: string | null | undefined;
+    let resolvedOverrideStreamId: string | null | undefined;
+
+    // If override class is being changed, validate it lives in the target year
+    // and (if a stream id is provided) that the stream belongs to that class.
+    if (dto.overrideClassId !== undefined) {
+      if (dto.overrideClassId === null) {
+        resolvedOverrideClassId = null;
+        resolvedOverrideStreamId = null;
+      } else {
+        const target = await this.prisma.class.findFirst({
+          where: {
+            id: dto.overrideClassId,
+            tenantId: actor.tenantId,
+            academicYearId: plan.toAcademicYearId,
+          },
+          include: {
+            streams: { select: { id: true, name: true, capacity: true } },
+            grade: {
+              select: { id: true, levelOrder: true, curriculumId: true },
+            },
+          },
+        });
+        if (!target) {
+          throw new BadRequestException(
+            'Override class does not belong to target year',
+          );
+        }
+        resolvedOverrideClassId = target.id;
+
+        if (dto.overrideStreamId !== undefined) {
+          if (dto.overrideStreamId === null) {
+            // Allowed only if class has no streams
+            if (target.streams.length > 0) {
+              throw new BadRequestException(
+                'Class has streams — overrideStreamId is required',
+              );
+            }
+            resolvedOverrideStreamId = null;
+          } else {
+            const owns = target.streams.some(
+              (s) => s.id === dto.overrideStreamId,
+            );
+            if (!owns) {
+              throw new BadRequestException(
+                'overrideStreamId does not belong to overrideClassId',
+              );
+            }
+            resolvedOverrideStreamId = dto.overrideStreamId;
+          }
+        } else {
+          // Class changed but no stream provided — clear stream
+          resolvedOverrideStreamId = null;
+        }
+
+        // Final consistency check
+        const v = validateFinalMapping(
+          [
+            {
+              id: target.id,
+              name: target.name ?? '',
+              capacity: target.capacity,
+              currentCount: 0,
+              grade: {
+                id: target.grade.id,
+                levelOrder: target.grade.levelOrder,
+                curriculumId: target.grade.curriculumId,
+              },
+              streams: target.streams.map((s) => ({
+                id: s.id,
+                name: s.name,
+                capacity: s.capacity,
+                currentCount: 0,
+              })),
+            },
+          ],
+          target.id,
+          resolvedOverrideStreamId ?? null,
         );
-      validateFinalMapping(
-        target.gradeLevel,
-        dto.overrideStream ?? target.stream,
-        target.academicYear.streamsByGrade as Record<string, string[]> | null,
-      );
+        if (!v.ok) throw new BadRequestException(v.reason);
+      }
+    } else if (dto.overrideStreamId !== undefined) {
+      // Stream-only change — must validate against existing override OR
+      // suggested class.
+      const baseClassId = entry.overrideClassId ?? entry.suggestedClassId;
+      if (!baseClassId) {
+        throw new BadRequestException(
+          'Cannot set override stream without an override or suggested class',
+        );
+      }
+      const target = await this.prisma.class.findFirst({
+        where: { id: baseClassId, tenantId: actor.tenantId },
+        include: { streams: { select: { id: true } } },
+      });
+      if (!target) {
+        throw new BadRequestException('Base class not found for stream');
+      }
+
+      if (dto.overrideStreamId === null) {
+        if (target.streams.length > 0) {
+          throw new BadRequestException(
+            'Class has streams — overrideStreamId cannot be null',
+          );
+        }
+        resolvedOverrideStreamId = null;
+      } else {
+        const owns = target.streams.some((s) => s.id === dto.overrideStreamId);
+        if (!owns) {
+          throw new BadRequestException(
+            'overrideStreamId does not belong to the chosen class',
+          );
+        }
+        resolvedOverrideStreamId = dto.overrideStreamId;
+      }
     }
 
-    const nextStatus: PromotionPlanEntryStatus =
-      dto.overrideClassId || dto.action === 'GRADUATE' || dto.action === 'SKIP'
-        ? PromotionPlanEntryStatus.OVERRIDDEN
-        : entry.status === PromotionPlanEntryStatus.CONFLICTED
-          ? PromotionPlanEntryStatus.CONFLICTED
-          : PromotionPlanEntryStatus.PENDING;
+    const willOverride =
+      resolvedOverrideClassId !== undefined ||
+      resolvedOverrideStreamId !== undefined ||
+      dto.action === 'GRADUATE' ||
+      dto.action === 'SKIP';
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const u = await tx.promotionPlanEntry.update({
+    const nextStatus: PromotionPlanEntryStatus = willOverride
+      ? PromotionPlanEntryStatus.OVERRIDDEN
+      : entry.status === PromotionPlanEntryStatus.CONFLICTED
+        ? PromotionPlanEntryStatus.CONFLICTED
+        : PromotionPlanEntryStatus.PENDING;
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.promotionPlanEntry.update({
         where: { id: entryId },
         data: {
-          overrideClassId: dto.overrideClassId ?? entry.overrideClassId,
-          overrideStream:
-            dto.overrideStream !== undefined
-              ? dto.overrideStream
-              : entry.overrideStream,
+          overrideClassId:
+            resolvedOverrideClassId !== undefined
+              ? resolvedOverrideClassId
+              : entry.overrideClassId,
+          overrideStreamId:
+            resolvedOverrideStreamId !== undefined
+              ? resolvedOverrideStreamId
+              : entry.overrideStreamId,
           action: dto.action ?? entry.action,
           adminNotes: dto.adminNotes ?? entry.adminNotes,
           status: nextStatus,
@@ -433,9 +665,8 @@ export class PromotionPlanService {
         },
         tx,
       );
-      return u;
+      return updated;
     });
-    return updated;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -525,13 +756,13 @@ export class PromotionPlanService {
       data: { status: PromotionPlanStatus.EXECUTING },
     });
 
-    const results = {
+    const results: ExecutionResults = {
       promoted: 0,
       graduated: 0,
       retained: 0,
       skipped: 0,
       failed: 0,
-      errors: [] as Array<{ entryId: string; error: string }>,
+      errors: [],
     };
 
     for (const entry of plan.entries) {
@@ -539,7 +770,10 @@ export class PromotionPlanService {
         await this.executeEntry(plan, entry, actor, results);
       } catch (e: any) {
         results.failed++;
-        results.errors.push({ entryId: entry.id, error: e.message });
+        results.errors.push({
+          entryId: entry.id,
+          error: e?.message ?? 'Unknown error',
+        });
       }
     }
 
@@ -550,9 +784,9 @@ export class PromotionPlanService {
         executedAt: new Date(),
         executedById: actor.id,
         summary: {
-          ...((plan.summary as any) ?? {}),
-          execution: results,
-        },
+          ...((plan.summary as Prisma.JsonObject) ?? {}),
+          execution: results as unknown as Prisma.JsonObject,
+        } as Prisma.InputJsonValue,
       },
     });
 
@@ -563,7 +797,7 @@ export class PromotionPlanService {
       tenantId: actor.tenantId,
       userId: actor.id,
       message: `${this.actorName(actor)} executed plan: ${results.promoted} promoted, ${results.graduated} graduated, ${results.retained} retained, ${results.failed} failed`,
-      metadata: results as any,
+      metadata: results as unknown as Prisma.InputJsonValue,
     });
 
     this.events.emit('BULK_PROMOTION_COMPLETED', {
@@ -575,10 +809,10 @@ export class PromotionPlanService {
   }
 
   private async executeEntry(
-    plan: any,
-    entry: any,
+    plan: PlanWithEntries,
+    entry: PlanEntry,
     actor: RequestActor,
-    results: any,
+    results: ExecutionResults,
   ) {
     await this.prisma.$transaction(async (tx) => {
       if (entry.action === 'SKIP') {
@@ -592,6 +826,7 @@ export class PromotionPlanService {
         results.skipped++;
         return;
       }
+
       if (entry.action === 'GRADUATE') {
         await tx.student.update({
           where: { id: entry.studentId },
@@ -624,23 +859,32 @@ export class PromotionPlanService {
             status: PromotionPlanEntryStatus.GRADUATED,
             executedAt: new Date(),
             finalClassId: null,
+            finalStreamId: null,
             executedPromotionId: promo.id,
           },
         });
         results.graduated++;
         return;
       }
+
       if (entry.action === 'RETAIN') {
         const finalClassId =
           entry.overrideClassId ?? entry.suggestedClassId ?? entry.fromClassId;
         if (!finalClassId) throw new Error('RETAIN has no class');
+
+        const finalStreamId =
+          entry.overrideStreamId ??
+          entry.suggestedStreamId ??
+          entry.fromStreamId ??
+          null;
+
         await this.history.createEntry(
           actor.tenantId,
           {
             studentId: entry.studentId,
             classId: finalClassId,
             academicYearId: plan.toAcademicYearId,
-            stream: entry.overrideStream ?? entry.suggestedStream,
+            streamId: finalStreamId,
             startDate: new Date().toISOString(),
             reason: 'REPETITION',
             isCurrent: true,
@@ -667,24 +911,28 @@ export class PromotionPlanService {
             status: PromotionPlanEntryStatus.RETAINED,
             executedAt: new Date(),
             finalClassId,
-            finalStream: entry.overrideStream ?? entry.suggestedStream,
+            finalStreamId,
             executedPromotionId: promo.id,
           },
         });
         results.retained++;
         return;
       }
+
       // PROMOTE
       const finalClassId = entry.overrideClassId ?? entry.suggestedClassId;
-      const finalStream = entry.overrideStream ?? entry.suggestedStream;
+      const finalStreamId =
+        entry.overrideStreamId ?? entry.suggestedStreamId ?? null;
+
       if (!finalClassId) throw new Error('PROMOTE has no target class');
+
       await this.history.createEntry(
         actor.tenantId,
         {
           studentId: entry.studentId,
           classId: finalClassId,
           academicYearId: plan.toAcademicYearId,
-          stream: finalStream,
+          streamId: finalStreamId,
           startDate: new Date().toISOString(),
           reason: 'AUTO_PROMOTION',
           isCurrent: true,
@@ -711,7 +959,7 @@ export class PromotionPlanService {
           status: PromotionPlanEntryStatus.APPROVED,
           executedAt: new Date(),
           finalClassId,
-          finalStream,
+          finalStreamId,
           executedPromotionId: promo.id,
         },
       });
@@ -750,7 +998,13 @@ export class PromotionPlanService {
   }
 }
 
-function summariseEntries(entries: any[]) {
+function summariseEntries(
+  entries: Array<{
+    action: string;
+    status: PromotionPlanEntryStatus;
+    warnings?: unknown;
+  }>,
+) {
   return {
     promoted: entries.filter((e) => e.action === 'PROMOTE').length,
     graduated: entries.filter((e) => e.action === 'GRADUATE').length,
@@ -759,6 +1013,8 @@ function summariseEntries(entries: any[]) {
     conflicts: entries.filter(
       (e) => e.status === PromotionPlanEntryStatus.CONFLICTED,
     ).length,
-    warnings: entries.filter((e) => (e.warnings as any[])?.length > 0).length,
+    warnings: entries.filter(
+      (e) => Array.isArray(e.warnings) && (e.warnings as unknown[]).length > 0,
+    ).length,
   };
 }

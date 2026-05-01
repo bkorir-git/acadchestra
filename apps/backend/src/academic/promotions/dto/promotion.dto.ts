@@ -32,11 +32,10 @@ export class PromoteStudentDto {
   @IsString()
   toClassId?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ nullable: true })
   @IsOptional()
   @IsString()
-  @MaxLength(60)
-  toStream?: string;
+  toStreamId?: string | null;
 
   @ApiPropertyOptional()
   @IsOptional()

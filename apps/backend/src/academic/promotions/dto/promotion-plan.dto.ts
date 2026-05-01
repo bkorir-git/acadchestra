@@ -1,9 +1,6 @@
 /**
  * @file promotion-plan.dto.ts
- * @description DTOs for the 3-step promotion policy engine:
- *     STEP 1 — PLAN (generate a dry-run plan with mappings/warnings/conflicts)
- *     STEP 2 — REVIEW (admin overrides individual entries)
- *     STEP 3 — EXECUTE (commits approved plan into StudentPromotion + history)
+ * @description DTOs for the 3-step promotion policy engine.
  */
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
@@ -71,15 +68,15 @@ export class CreatePromotionPlanDto {
 }
 
 export class UpdatePlanEntryDto {
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ nullable: true })
   @IsOptional()
   @IsString()
   overrideClassId?: string | null;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ nullable: true })
   @IsOptional()
   @IsString()
-  overrideStream?: string | null;
+  overrideStreamId?: string | null;
 
   @ApiPropertyOptional({
     enum: ['PROMOTE', 'RETAIN', 'GRADUATE', 'SKIP'],
