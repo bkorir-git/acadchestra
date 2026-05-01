@@ -6,7 +6,6 @@
  *   - Stream enumeration from Class.stream strings
  *   - Streams-per-grade listing for UI navigation
  */
-
 import {
   BadRequestException,
   Injectable,
@@ -377,6 +376,26 @@ export class ClassesService {
     });
 
     return { message: 'Class deleted successfully' };
+  }
+
+  async findStreams(id: string, actor: RequestActor) {
+    const cls = await this.prisma.class.findFirst({
+      where: { id, tenantId: actor.tenantId },
+      select: { id: true },
+    });
+    if (!cls) throw new NotFoundException('Class not found');
+
+    return this.prisma.stream.findMany({
+      where: { classId: id, tenantId: actor.tenantId },
+      orderBy: { name: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        capacity: true,
+        color: true,
+        _count: { select: { students: true } },
+      },
+    });
   }
 
   /**
