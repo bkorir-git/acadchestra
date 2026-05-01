@@ -1,74 +1,113 @@
+/**
+ * @file auth.service.ts
+ * @module auth
+ * @description Production-grade authentication service.
+ *
+ *   Capabilities:
+ *     - register / login / logout
+ *     - getProfile / updateProfile / changePassword
+ *     - forgotPassword / resetPassword (real email via EmailService)
+ *     - refreshAccessToken (rotating-style refresh)
+ *     - createUserWithPasswordReset (admin-issued accounts → temp password email)
+ *
+ *   Everything is config-driven via the dynamic Config Engine:
+ *     - password complexity rules
+ *     - max login attempts + lockout duration
+ *     - session (access token) timeout
+ *     - 2FA toggle (informational — full TOTP wiring lives in a separate module)
+ *
+ *   Lockout protection is delegated to LoginAttemptService.
+ *   Password rules are delegated to PasswordPolicyService.
+ *   Token issuance is delegated to TokenService.
+ */
+
 import {
-  Injectable,
-  UnauthorizedException,
-  ConflictException,
   BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from '../database/prisma.service';
+import { ConfigService as NestConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import { PrismaService } from '../database/prisma.service';
+import { EmailService } from '../common/email/email.service';
+import { ConfigService } from '../common/config/config.service';
+import { PasswordPolicyService } from './services/password-policy.service';
+import { LoginAttemptService } from './services/login-attempt.service';
+import { TokenService } from './services/token.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { ConfigService } from '@nestjs/config';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
+    private readonly nestConfig: NestConfigService,
+    private readonly tenantConfig: ConfigService,
+    private readonly email: EmailService,
+    private readonly passwordPolicy: PasswordPolicyService,
+    private readonly loginAttempts: LoginAttemptService,
+    private readonly tokens: TokenService,
   ) {}
 
-  async register(registerDto: RegisterDto) {
-    const {
-      email,
-      password,
-      firstName,
-      lastName,
-      username,
-      phone,
-      dateOfBirth,
-      gender,
-      tenantId,
-    } = registerDto;
+  // ─────────────────────────────────────────── HELPERS
 
-    // Check if user already exists
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email },
+  private async hashPassword(plain: string): Promise<string> {
+    const rounds = parseInt(
+      this.nestConfig.get<string>('BCRYPT_SALT_ROUNDS', '12'),
+      10,
+    );
+    return bcrypt.hash(plain, rounds);
+  }
+
+  private stripPassword<T extends { password?: string }>(user: T) {
+    const { password, ...rest } = user;
+    return rest;
+  }
+
+  private async getDefaultTenant() {
+    return this.prisma.tenant.findFirst({ where: { isActive: true } });
+  }
+
+  private appBaseUrl(): string {
+    return (
+      this.nestConfig.get<string>('APP_URL') ??
+      this.nestConfig.get<string>('FRONTEND_URL') ??
+      'http://localhost:3000'
+    );
+  }
+
+  // ─────────────────────────────────────────── REGISTER
+
+  async register(dto: RegisterDto) {
+    const existing = await this.prisma.user.findUnique({
+      where: { email: dto.email },
     });
-
-    if (existingUser) {
+    if (existing) {
       throw new ConflictException('User with this email already exists');
     }
 
-    // Validate password
-    if (password.length < 8 || password.length > 100) {
-      throw new BadRequestException(
-        'Password must be between 8 and 100 characters',
-      );
+    const tenantId =
+      dto.tenantId ?? (await this.getDefaultTenant())?.id ?? null;
+
+    if (tenantId) {
+      await this.passwordPolicy.validate(tenantId, dto.password);
     }
 
-    // Hash password
-    const saltRounds = this.configService.get('BCRYPT_SALT_ROUNDS', 12);
-    const hashedPassword = await bcrypt.hash(password, parseInt(saltRounds));
-
-    // Create user
+    const hashed = await this.hashPassword(dto.password);
+    const { password: _password, ...rest } = dto as RegisterDto &
+      Record<string, unknown>;
     const userData: any = {
-      email,
-      password: hashedPassword,
-      firstName,
-      lastName,
-      username,
-      phone,
-      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
-      gender,
+      ...rest,
+      email: dto.email.trim().toLowerCase(),
+      password: hashed,
+      tenantId,
     };
-
-    const resolvedTenantId = tenantId || (await this.getDefaultTenant())?.id;
-    if (resolvedTenantId) {
-      userData.tenantId = resolvedTenantId;
-    }
 
     const user = await this.prisma.user.create({
       data: userData,
@@ -82,38 +121,60 @@ export class AuthService {
       },
     });
 
-    // Generate JWT token
-    const payload = {
-      sub: user.id,
+    const access = await this.tokens.issueAccessToken({
+      id: user.id,
       email: user.email,
       tenantId: user.tenantId,
-    };
-    const token = this.jwtService.sign(payload);
+    });
+    const refresh = await this.tokens.issueRefreshToken({
+      id: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+    });
 
-    // Update last login
     await this.prisma.user.update({
       where: { id: user.id },
       data: { lastLogin: new Date() },
     });
 
-    const { password: _, ...userWithoutPassword } = user;
+    // Welcome email — fire-and-forget
+    this.email
+      .send({
+        to: user.email,
+        toName: `${user.firstName} ${user.lastName}`,
+        templateCode: 'welcome',
+        tenantId: tenantId ?? undefined,
+        variables: {
+          tenant: { name: user.tenant?.name ?? 'Acadchestra' },
+          user: {
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+          },
+          links: { login: `${this.appBaseUrl()}/login` },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(`welcome email failed: ${err?.message}`),
+      );
 
     return {
-      user: userWithoutPassword,
-      token,
+      user: this.stripPassword(user),
+      token: access.token,
+      accessToken: access.token,
+      refreshToken: refresh.token,
+      expiresIn: access.expiresInSeconds,
     };
   }
 
-  private async getDefaultTenant() {
-    return this.prisma.tenant.findFirst({
-      where: { isActive: true },
-    });
-  }
+  // ─────────────────────────────────────────── LOGIN
 
-  async login(loginDto: LoginDto) {
-    const { email, password } = loginDto;
+  async login(dto: LoginDto) {
+    const email = dto.email.trim().toLowerCase();
 
-    // Find user with roles and permissions
+    // Lockout check first to avoid timing leaks
+    await this.loginAttempts.ensureNotLocked(null, email);
+
     const user = await this.prisma.user.findUnique({
       where: { email },
       include: {
@@ -122,11 +183,7 @@ export class AuthService {
           include: {
             role: {
               include: {
-                rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
-                },
+                rolePermissions: { include: { permission: true } },
               },
             },
           },
@@ -135,82 +192,105 @@ export class AuthService {
     });
 
     if (!user) {
+      // Increment counter even for unknown emails to make enumeration harder
+      await this.loginAttempts.recordFailure(null, email);
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Check if user is active
+    // Now we have tenantId — re-check lockout in tenant context
+    await this.loginAttempts.ensureNotLocked(user.tenantId, email);
+
     if (!user.isActive) {
       throw new UnauthorizedException('Account is deactivated');
     }
-
-    // Check if tenant is active
-    if (!user.tenant.isActive) {
+    if (user.tenant && !user.tenant.isActive) {
       throw new UnauthorizedException('Tenant account is deactivated');
     }
 
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
+    const ok = await bcrypt.compare(dto.password, user.password);
+    if (!ok) {
+      await this.loginAttempts.recordFailure(user.tenantId, email);
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Update last login
+    // Success — clear counter
+    this.loginAttempts.clear(email);
+
     await this.prisma.user.update({
       where: { id: user.id },
       data: { lastLogin: new Date() },
     });
 
-    // Generate JWT token
-    const payload = {
-      sub: user.id,
+    const access = await this.tokens.issueAccessToken({
+      id: user.id,
       email: user.email,
       tenantId: user.tenantId,
-    };
-
-    const token = this.jwtService.sign(payload);
-
-    // Remove password from response
-    const { password: _, ...userWithoutPassword } = user;
+    });
+    const refresh = await this.tokens.issueRefreshToken({
+      id: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+    });
 
     return {
-      user: userWithoutPassword,
-      token,
+      user: this.stripPassword(user),
+      token: access.token,
+      accessToken: access.token,
+      refreshToken: refresh.token,
+      expiresIn: access.expiresInSeconds,
+      mustChangePassword: user.mustChangePassword,
     };
   }
+
+  // ─────────────────────────────────────────── REFRESH
+
+  async refreshAccessToken(refreshToken: string) {
+    const payload = this.tokens.verifyRefreshToken(refreshToken);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      include: { tenant: true },
+    });
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('User not found or inactive');
+    }
+    if (user.tenant && !user.tenant.isActive) {
+      throw new UnauthorizedException('Tenant inactive');
+    }
+
+    const access = await this.tokens.issueAccessToken({
+      id: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+    });
+    const newRefresh = await this.tokens.issueRefreshToken({
+      id: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+    });
+
+    return {
+      accessToken: access.token,
+      refreshToken: newRefresh.token,
+      expiresIn: access.expiresInSeconds,
+    };
+  }
+
+  // ─────────────────────────────────────────── VALIDATE (LocalStrategy hook)
 
   async validateUser(email: string, password: string) {
     const user = await this.prisma.user.findUnique({
-      where: { email },
-      include: {
-        tenant: true,
-        userRoles: {
-          include: {
-            role: {
-              include: {
-                rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+      where: { email: email.trim().toLowerCase() },
+      include: { tenant: true },
     });
-
-    if (!user || !user.isActive || !user.tenant.isActive) {
-      return null;
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return null;
-    }
-
-    const { password: _, ...result } = user;
-    return result;
+    if (!user || !user.isActive) return null;
+    if (user.tenant && !user.tenant.isActive) return null;
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return null;
+    return this.stripPassword(user);
   }
+
+  // ─────────────────────────────────────────── PROFILE
 
   async getProfile(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -221,11 +301,7 @@ export class AuthService {
           include: {
             role: {
               include: {
-                rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
-                },
+                rolePermissions: { include: { permission: true } },
               },
             },
           },
@@ -234,97 +310,60 @@ export class AuthService {
         teacher: true,
       },
     });
-
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
-
-    const { password: _, ...userWithoutPassword } = user;
-    return userWithoutPassword;
+    if (!user) throw new UnauthorizedException('User not found');
+    return this.stripPassword(user);
   }
 
-  //added
-
-  async createUserWithPasswordReset(createUserData: any) {
-    const { email, password, requirePasswordReset, ...userData } =
-      createUserData;
-
-    // Check if user already exists
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (existingUser) {
-      throw new ConflictException('User with this email already exists');
-    }
-
-    // Hash temporary password
-    const saltRounds = this.configService.get('BCRYPT_SALT_ROUNDS', 12);
-    const hashedPassword = await bcrypt.hash(password, parseInt(saltRounds));
-
-    // Create user
-    const user = await this.prisma.user.create({
-      data: {
-        ...userData,
-        email,
-        password: hashedPassword,
-        isEmailVerified: false, // Will be verified when they reset password
-      },
-      include: {
-        tenant: true,
-        userRoles: {
-          include: {
-            role: true,
-          },
-        },
-      },
-    });
-
-    // Generate password reset token
-    if (requirePasswordReset) {
-      const resetToken = this.generateResetToken();
-
-      // Store reset token (in production, store in Redis or database)
-      // For now, we'll send it via email
-      await this.sendPasswordResetEmail(user.email, user.firstName, resetToken);
-    }
-
-    const { password: _, ...userWithoutPassword } = user;
-    return userWithoutPassword;
-  }
-
-  private generateResetToken(): string {
-    return require('crypto').randomBytes(32).toString('hex');
-  }
-
-  async updateProfile(userId: string, updateProfileDto: UpdateProfileDto) {
-    const user = await this.prisma.user.findUnique({
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const existing = await this.prisma.user.findUnique({
       where: { id: userId },
     });
+    if (!existing) throw new UnauthorizedException('User not found');
 
-    if (!user) {
-      throw new UnauthorizedException('User not found');
+    // Honour admin-controlled "profile.allowedSelfEditFields" config
+    const allowed = existing.tenantId
+      ? await this.tenantConfig.getArray<string>(
+          existing.tenantId,
+          'profile',
+          'allowedSelfEditFields',
+          [
+            'firstName',
+            'lastName',
+            'phone',
+            'username',
+            'dateOfBirth',
+            'gender',
+            'avatar',
+          ],
+        )
+      : [
+          'firstName',
+          'lastName',
+          'phone',
+          'username',
+          'dateOfBirth',
+          'gender',
+          'avatar',
+        ];
+
+    const data: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dto)) {
+      if (value === undefined) continue;
+      if (!allowed.includes(key)) continue;
+      data[key] =
+        key === 'dateOfBirth' && value ? new Date(value as string) : value;
     }
 
-    const updatedUser = await this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: userId },
-      data: {
-        ...updateProfileDto,
-        dateOfBirth: updateProfileDto.dateOfBirth
-          ? new Date(updateProfileDto.dateOfBirth)
-          : undefined,
-      },
+      data,
       include: {
         tenant: true,
         userRoles: {
           include: {
             role: {
               include: {
-                rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
-                },
+                rolePermissions: { include: { permission: true } },
               },
             },
           },
@@ -334,52 +373,177 @@ export class AuthService {
       },
     });
 
-    const { password: _, ...userWithoutPassword } = updatedUser;
-    return userWithoutPassword;
+    return this.stripPassword(updated);
   }
 
-  private async sendPasswordResetEmail(
-    email: string,
-    firstName: string,
-    token: string,
+  // ─────────────────────────────────────────── CHANGE PASSWORD
+
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
   ) {
-    // In production, integrate with email service (SendGrid, AWS SES, etc.)
-    console.log(`
-    Password Reset Email for ${firstName} (${email})
-    
-    Welcome to Acadchestra!
-    
-    Your account has been created. Please click the following link to set your password:
-    ${this.configService.get('APP_URL')}/auth/reset-password?token=${token}
-    
-    This link will expire in 24 hours.
-  `);
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('User not found');
 
-    // TODO: Implement actual email sending
-    // await this.emailService.sendPasswordResetEmail(email, firstName, token);
-  }
+    const ok = await bcrypt.compare(currentPassword, user.password);
+    if (!ok) throw new BadRequestException('Current password is incorrect');
 
-  async resetPassword(token: string, newPassword: string) {
-    // In production, verify token from database/Redis
-    // For now, we'll simulate successful reset
-
-    // Validate password strength
-    if (newPassword.length < 8) {
-      throw new BadRequestException(
-        'Password must be at least 8 characters long',
+    if (user.tenantId) {
+      // Optional: respect feature toggle
+      const allowed = await this.tenantConfig.getBoolean(
+        user.tenantId,
+        'profile',
+        'allowSelfPasswordChange',
+        true,
       );
+      if (!allowed) {
+        throw new BadRequestException(
+          'Password changes are disabled by your administrator',
+        );
+      }
+      await this.passwordPolicy.validate(user.tenantId, newPassword);
     }
 
-    // Hash new password
-    const saltRounds = this.configService.get('BCRYPT_SALT_ROUNDS', 12);
-    const hashedPassword = await bcrypt.hash(newPassword, parseInt(saltRounds));
+    const hashed = await this.hashPassword(newPassword);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { password: hashed, mustChangePassword: false },
+    });
 
-    // In production, find user by token and update password
-    // const user = await this.prisma.user.findFirst({
-    //   where: { resetToken: token, resetTokenExpiry: { gte: new Date() } }
-    // });
+    return { message: 'Password changed successfully' };
+  }
 
-    // For demo, return success
+  // ─────────────────────────────────────────── FORGOT / RESET
+  async forgotPassword(emailRaw: string) {
+    const email = emailRaw.trim().toLowerCase();
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      include: { tenant: true },
+    });
+
+    if (user && user.isActive) {
+      const { rawToken, expiresInSeconds } = await this.tokens.createResetToken(
+        user.id,
+        user.tenantId,
+      );
+
+      const link = `${this.appBaseUrl()}/reset-password?token=${encodeURIComponent(rawToken)}`;
+
+      this.email
+        .send({
+          to: user.email,
+          toName: `${user.firstName} ${user.lastName}`,
+          templateCode: 'password_reset',
+          tenantId: user.tenantId ?? undefined,
+          variables: {
+            user: {
+              firstName: user.firstName,
+              lastName: user.lastName,
+              email: user.email,
+            },
+            tenant: { name: user.tenant?.name ?? 'Acadchestra' },
+            links: { reset: link },
+            expiresIn: `${Math.round(expiresInSeconds / 60)} minutes`,
+          },
+        })
+        .catch((err) =>
+          this.logger.warn(`reset email failed: ${err?.message}`),
+        );
+    }
+
+    return {
+      message:
+        'If an account exists for that email, a reset link has been sent.',
+    };
+  }
+
+  async resetPassword(rawToken: string, newPassword: string) {
+    // Verify token, get userId, mark as used — all in one call
+    const { userId } = await this.tokens.verifyAndConsumeResetToken(rawToken);
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.tenantId) {
+      await this.passwordPolicy.validate(user.tenantId, newPassword);
+    }
+
+    const hashed = await this.hashPassword(newPassword);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashed, mustChangePassword: false },
+    });
+
+    this.loginAttempts.clear(user.email);
     return { message: 'Password reset successfully' };
+  }
+
+  // ─────────────────────────────────────────── ADMIN-CREATED USERS
+
+  async createUserWithPasswordReset(input: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    tenantId: string;
+    phone?: string;
+    temporaryPassword: string;
+    requirePasswordReset?: boolean;
+  }) {
+    const existing = await this.prisma.user.findUnique({
+      where: { email: input.email },
+    });
+    if (existing) {
+      throw new ConflictException('User with this email already exists');
+    }
+
+    const hashed = await this.hashPassword(input.temporaryPassword);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: input.tenantId },
+    });
+
+    const user = await this.prisma.user.create({
+      data: {
+        email: input.email,
+        password: hashed,
+        firstName: input.firstName,
+        lastName: input.lastName,
+        phone: input.phone,
+        tenantId: input.tenantId,
+        mustChangePassword: input.requirePasswordReset ?? true,
+        isEmailVerified: false,
+      },
+      include: { tenant: true },
+    });
+
+    this.email
+      .send({
+        to: user.email,
+        toName: `${user.firstName} ${user.lastName}`,
+        templateCode: 'temp_password',
+        tenantId: input.tenantId,
+        variables: {
+          tenant: { name: tenant?.name ?? 'Acadchestra' },
+          user: {
+            firstName: user.firstName,
+            email: user.email,
+            temporaryPassword: input.temporaryPassword,
+          },
+          links: { login: `${this.appBaseUrl()}/login` },
+        },
+      })
+      .catch((err) =>
+        this.logger.warn(`temp password email failed: ${err?.message}`),
+      );
+
+    return this.stripPassword(user);
+  }
+
+  // ─────────────────────────────────────────── LOGOUT (stateless)
+
+  async logout(_userId: string) {
+    // For stateless JWT, logout is a client concern. If you ever introduce
+    // a refresh-token table, revoke here. For now we just acknowledge.
+    return { message: 'Logged out successfully' };
   }
 }
