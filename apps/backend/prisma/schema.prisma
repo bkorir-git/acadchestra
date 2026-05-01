@@ -508,6 +508,7 @@ model Tenant {
   settings          TenantSettings?
   configs           Config[]
   policies          Policy[]
+  passwordResetTokens PasswordResetToken[]
   admissionCounter  AdmissionCounter?
 
   users    User[]
@@ -594,6 +595,7 @@ model User {
   guardian      Guardian?
   activityLogs  ActivityLog[]
   notifications Notification[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([tenantId, isActive])
   @@map("users")
@@ -730,6 +732,23 @@ model Policy {
   @@unique([tenantId, name])
   @@index([tenantId, category, isActive])
   @@map("policies")
+}
+
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique          // SHA-256 of the raw token, never raw
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?                 // null = unused, set on consumption
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([tenantId, createdAt])
+  @@map("password_reset_tokens")
 }
 
 // =============================================================================
