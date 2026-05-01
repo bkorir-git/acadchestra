@@ -1,6 +1,8 @@
 /**
  * @file classes.controller.ts
  * @module academic/classes
+ * @description REST controller for academic classes, streams (read-only here),
+ *   and student roster.
  */
 
 import {
@@ -63,6 +65,15 @@ export class ClassesController {
   @ApiOperation({ summary: 'Roster of students enrolled in the class' })
   students(@Param('id') id: string, @CurrentUser() user: any) {
     return this.service.findStudents(id, user);
+  }
+
+  @Get(':id/streams')
+  @Roles('SuperAdmin', 'Admin', 'Principal', 'Teacher', 'Student')
+  @ApiOperation({
+    summary: 'Streams of the class with per-stream student counts',
+  })
+  streams(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.findStreams(id, user);
   }
 
   @Post()
