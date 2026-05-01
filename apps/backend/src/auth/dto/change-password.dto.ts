@@ -1,14 +1,19 @@
+/**
+ * @file change-password.dto.ts
+ * @description Body shape for /auth/change-password. Complexity is enforced
+ *   by PasswordPolicyService at runtime — no static @Matches() rule here.
+ */
+
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MinLength, MaxLength } from 'class-validator';
+import { IsString, MinLength } from 'class-validator';
 
 export class ChangePasswordDto {
-  @ApiProperty({ example: 'currentPassword123' })
+  @ApiProperty({ example: 'CurrentPass123!' })
   @IsString()
-  currentPassword: string;
+  currentPassword!: string;
 
-  @ApiProperty({ example: 'newSecurePassword456!' })
+  @ApiProperty({ example: 'NewSecurePass456!' })
   @IsString()
-  @MinLength(8)
-  @MaxLength(100)
-  newPassword: string;
+  @MinLength(6)
+  newPassword!: string;
 }
