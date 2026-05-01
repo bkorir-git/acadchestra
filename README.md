@@ -56,7 +56,7 @@ acadchestra/
 ## 🛠️ Tech Stack
 
 - **Backend**: NestJS, PostgreSQL, Redis, Prisma ORM
-- **Frontend**: Next.js 14, TypeScript, Tailwind CSS, Shadcn/UI
+- **Frontend**: Next.js 16.2.4, TypeScript, Tailwind CSS, Shadcn/UI
 - **Mobile**: React Native (planned)
 - **Infrastructure**: Docker, AWS, Kubernetes
 
