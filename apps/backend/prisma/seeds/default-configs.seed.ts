@@ -88,12 +88,45 @@ export const DEFAULT_TENANT_CONFIGS: DefaultConfig[] = [
   // ── SECURITY ──
   { category: 'security', key: 'sessionTimeoutMinutes', value: 60 },
   { category: 'security', key: 'passwordMinLength', value: 8 },
+  { category: 'security', key: 'passwordMaxLength', value: 100 },
   { category: 'security', key: 'passwordRequireUppercase', value: true },
+  { category: 'security', key: 'passwordRequireLowercase', value: true },
   { category: 'security', key: 'passwordRequireNumber', value: true },
-  { category: 'security', key: 'passwordRequireSymbol', value: false },
-  { category: 'security', key: 'requireTwoFactor', value: false },
+  { category: 'security', key: 'passwordRequireSymbol', value: true },
   { category: 'security', key: 'maxLoginAttempts', value: 5 },
   { category: 'security', key: 'lockoutDurationMinutes', value: 15 },
+  {
+    category: 'security',
+    key: 'requireTwoFactor',
+    value: false,
+    description: 'When true, every user must complete 2FA after login',
+  },
+
+  // ─────────────────────────── PROFILE (self-service)
+  {
+    category: 'profile',
+    key: 'allowedSelfEditFields',
+    value: [
+      'firstName',
+      'lastName',
+      'phone',
+      'username',
+      'dateOfBirth',
+      'gender',
+      'avatar',
+    ],
+    description:
+      'Whitelist of profile fields a non-admin user may edit on themselves',
+  },
+  { category: 'profile', key: 'allowSelfPasswordChange', value: true },
+  { category: 'profile', key: 'allowAvatarUpload', value: true },
+  {
+    category: 'profile',
+    key: 'allowEmailChange',
+    value: false,
+    description: 'Whether users can change their own email; usually admin-only',
+  },
+  { category: 'profile', key: 'allowProfileDeletion', value: false },
 
   // ── COMMS ──
   { category: 'comms', key: 'enableEmailNotifications', value: true },
@@ -101,6 +134,8 @@ export const DEFAULT_TENANT_CONFIGS: DefaultConfig[] = [
   { category: 'comms', key: 'enablePushNotifications', value: false },
   { category: 'comms', key: 'feeReminderDays', value: [7, 3, 1] },
   { category: 'comms', key: 'termActivationReminderDays', value: [7, 3, 1] },
+  { category: 'comms', key: 'emailFromName', value: 'Acadchestra' },
+  { category: 'comms', key: 'emailReplyTo', value: '' },
 
   // ── FEATURES ──
   { category: 'features', key: 'enableParentPortal', value: true },
@@ -108,4 +143,8 @@ export const DEFAULT_TENANT_CONFIGS: DefaultConfig[] = [
   { category: 'features', key: 'enableOnlinePayments', value: false },
   { category: 'features', key: 'enableBulkImport', value: true },
   { category: 'features', key: 'enableAutoPromotion', value: false },
+  { category: 'features', key: 'enableMessaging', value: true },
+  { category: 'features', key: 'enableExams', value: true },
+  { category: 'features', key: 'enableAttendance', value: true },
+  { category: 'features', key: 'enableNewsAndActivities', value: true },
 ];
