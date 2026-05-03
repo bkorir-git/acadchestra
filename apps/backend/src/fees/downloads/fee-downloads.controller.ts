@@ -20,11 +20,30 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { FeeRoleGuard, FeeAccess } from '../common/fee-roles.guard';
-import { FeeDownloadsService } from './fee-downloads.service';
+import { FeeDownloadsService, Orientation } from './fee-downloads.service';
 import { MIME, sendBinary } from '../common/sendBinary.util';
 import { PdfRendererService } from './pdf-renderer.service';
 import { receiptTemplate } from './templates/receipt.template';
 import { PrismaService } from '../../database/prisma.service';
+
+function slugifyForFilename(input: string): string {
+  return (
+    (input ?? 'download')
+      .toString()
+      .trim()
+      .replace(/[\\/:*?"<>|]+/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .toLowerCase() || 'download'
+  );
+}
+
+function pickOrientation(
+  raw: string | undefined,
+  fallback: Orientation,
+): Orientation {
+  return raw === 'portrait' || raw === 'landscape' ? raw : fallback;
+}
 
 @ApiTags('Fee Downloads')
 @Controller('fees/downloads')
@@ -52,22 +71,44 @@ export class FeeDownloadsController {
   @FeeAccess('READ_ONLY')
   async structurePdf(
     @Param('id') id: string,
+    @Query('orientation') orientation: string | undefined,
     @CurrentUser() user: any,
     @Res() res: Response,
   ) {
-    const buf = await this.service.structurePdf(user.tenantId, id);
-    sendBinary(res, buf, MIME.PDF, `fee-structure-${id}.pdf`);
+    const orient = pickOrientation(orientation, 'portrait');
+    const { buffer, filenameBase } = await this.service.structurePdf(
+      user.tenantId,
+      id,
+      orient,
+    );
+    sendBinary(
+      res,
+      buffer,
+      MIME.PDF,
+      `${slugifyForFilename(filenameBase)}.pdf`,
+    );
   }
 
   @Get('structure/:id/word')
   @FeeAccess('READ_ONLY')
   async structureWord(
     @Param('id') id: string,
+    @Query('orientation') orientation: string | undefined,
     @CurrentUser() user: any,
     @Res() res: Response,
   ) {
-    const buf = await this.service.structureWord(user.tenantId, id);
-    sendBinary(res, buf, MIME.DOCX, `fee-structure-${id}.docx`);
+    const orient = pickOrientation(orientation, 'portrait');
+    const { buffer, filenameBase } = await this.service.structureWord(
+      user.tenantId,
+      id,
+      orient,
+    );
+    sendBinary(
+      res,
+      buffer,
+      MIME.DOCX,
+      `${slugifyForFilename(filenameBase)}.docx`,
+    );
   }
 
   // ─── Year matrix ────────────────────────────────────────────────
@@ -78,15 +119,23 @@ export class FeeDownloadsController {
     @Query('curriculumId') curriculumId: string | undefined,
     @Query('gradeId') gradeId: string | undefined,
     @Query('classId') classId: string | undefined,
+    @Query('orientation') orientation: string | undefined,
     @CurrentUser() user: any,
     @Res() res: Response,
   ) {
-    const buf = await this.service.yearMatrixPdf(user.tenantId, id, {
-      curriculumId,
-      gradeId,
-      classId,
-    });
-    sendBinary(res, buf, MIME.PDF, `fees-structure-${id}.pdf`);
+    const orient = pickOrientation(orientation, 'landscape');
+    const { buffer, filenameBase } = await this.service.yearMatrixPdf(
+      user.tenantId,
+      id,
+      { curriculumId, gradeId, classId },
+      orient,
+    );
+    sendBinary(
+      res,
+      buffer,
+      MIME.PDF,
+      `${slugifyForFilename(filenameBase)}.pdf`,
+    );
   }
 
   @Get('year/:id/matrix/word')
@@ -96,15 +145,23 @@ export class FeeDownloadsController {
     @Query('curriculumId') curriculumId: string | undefined,
     @Query('gradeId') gradeId: string | undefined,
     @Query('classId') classId: string | undefined,
+    @Query('orientation') orientation: string | undefined,
     @CurrentUser() user: any,
     @Res() res: Response,
   ) {
-    const buf = await this.service.yearMatrixWord(user.tenantId, id, {
-      curriculumId,
-      gradeId,
-      classId,
-    });
-    sendBinary(res, buf, MIME.DOCX, `fees-structure-${id}.docx`);
+    const orient = pickOrientation(orientation, 'landscape');
+    const { buffer, filenameBase } = await this.service.yearMatrixWord(
+      user.tenantId,
+      id,
+      { curriculumId, gradeId, classId },
+      orient,
+    );
+    sendBinary(
+      res,
+      buffer,
+      MIME.DOCX,
+      `${slugifyForFilename(filenameBase)}.docx`,
+    );
   }
 
   // ─── Per-class per-term slip ───────────────────────────────────
@@ -114,16 +171,24 @@ export class FeeDownloadsController {
     @Param('id') yearId: string,
     @Param('termId') termId: string,
     @Param('classId') classId: string,
+    @Query('orientation') orientation: string | undefined,
     @CurrentUser() user: any,
     @Res() res: Response,
   ) {
-    const buf = await this.service.classTermSlipPdf(
+    const orient = pickOrientation(orientation, 'portrait');
+    const { buffer, filenameBase } = await this.service.classTermSlipPdf(
       user.tenantId,
       yearId,
       termId,
       classId,
+      orient,
     );
-    sendBinary(res, buf, MIME.PDF, `fee-slip-${classId}-${termId}.pdf`);
+    sendBinary(
+      res,
+      buffer,
+      MIME.PDF,
+      `${slugifyForFilename(filenameBase)}.pdf`,
+    );
   }
 
   @Get('year/:id/term/:termId/class/:classId/word')
@@ -132,16 +197,24 @@ export class FeeDownloadsController {
     @Param('id') yearId: string,
     @Param('termId') termId: string,
     @Param('classId') classId: string,
+    @Query('orientation') orientation: string | undefined,
     @CurrentUser() user: any,
     @Res() res: Response,
   ) {
-    const buf = await this.service.classTermSlipWord(
+    const orient = pickOrientation(orientation, 'portrait');
+    const { buffer, filenameBase } = await this.service.classTermSlipWord(
       user.tenantId,
       yearId,
       termId,
       classId,
+      orient,
     );
-    sendBinary(res, buf, MIME.DOCX, `fee-slip-${classId}-${termId}.docx`);
+    sendBinary(
+      res,
+      buffer,
+      MIME.DOCX,
+      `${slugifyForFilename(filenameBase)}.docx`,
+    );
   }
 
   // ─── Invoice + receipt ─────────────────────────────────────────
@@ -152,8 +225,16 @@ export class FeeDownloadsController {
     @CurrentUser() user: any,
     @Res() res: Response,
   ) {
-    const buf = await this.service.invoicePdf(user.tenantId, id);
-    sendBinary(res, buf, MIME.PDF, `invoice-${id}.pdf`);
+    const { buffer, filenameBase } = await this.service.invoicePdf(
+      user.tenantId,
+      id,
+    );
+    sendBinary(
+      res,
+      buffer,
+      MIME.PDF,
+      `${slugifyForFilename(filenameBase)}.pdf`,
+    );
   }
 
   @Get('receipt/:id/pdf')
@@ -185,6 +266,11 @@ export class FeeDownloadsController {
     });
     const html = receiptTemplate({ payment, tenant });
     const buf = await this.pdf.renderHtml(html);
-    sendBinary(res, buf, MIME.PDF, `receipt-${payment.receiptNumber}.pdf`);
+    sendBinary(
+      res,
+      buf,
+      MIME.PDF,
+      `${slugifyForFilename(`Receipt ${payment.receiptNumber}`)}.pdf`,
+    );
   }
 }
