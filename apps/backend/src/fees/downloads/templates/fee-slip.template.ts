@@ -1,7 +1,6 @@
 /**
  * @file fee-slip.template.ts
  * @description Per-class per-term fee slip — the page parents take home.
- *   Shows tuition, extras, total, payment instructions, due dates.
  */
 
 import { html, layout } from './_layout';
@@ -22,10 +21,21 @@ export interface FeeSlipInput {
   paymentRules?: Array<{ byWeek: number; minPercentage: number }>;
   tenant: any;
   currency: Partial<CurrencyContext>;
+  pageOrientation?: 'portrait' | 'landscape';
 }
 
 export function feeSlipTemplate(input: FeeSlipInput): string {
-  const { year, term, klass, components, total, paymentRules, tenant, currency } = input;
+  const {
+    year,
+    term,
+    klass,
+    components,
+    total,
+    paymentRules,
+    tenant,
+    currency,
+    pageOrientation,
+  } = input;
   const fmt = (n: number) => formatMoney(n, currency);
   const primary = tenant?.settings?.primaryColor ?? '#1E40AF';
 
@@ -71,7 +81,10 @@ export function feeSlipTemplate(input: FeeSlipInput): string {
       <thead>
         <tr><th>#</th><th>Component</th><th>Category</th><th>Type</th><th>Due</th><th class="right">Amount</th></tr>
       </thead>
-      <tbody>${rows}</tbody>
+      <tbody>${
+        rows ||
+        `<tr><td colspan="6" class="muted center">No fee components are configured for this class in ${html(term.name)}. Check that your matrix has a row for ${html(klass.gradeName ?? klass.name)} and the matrix covers this term.</td></tr>`
+      }</tbody>
       <tfoot>
         <tr><td colspan="5">Total payable for ${html(term.name)}</td><td class="right">${fmt(total)}</td></tr>
       </tfoot>
@@ -98,5 +111,6 @@ export function feeSlipTemplate(input: FeeSlipInput): string {
     tenant,
     primaryColor: primary,
     body,
+    pageOrientation: pageOrientation ?? 'portrait',
   });
 }
