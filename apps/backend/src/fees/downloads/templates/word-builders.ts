@@ -9,6 +9,7 @@ import {
   AlignmentType,
   Document,
   HeadingLevel,
+  ImageRun,
   Packer,
   PageOrientation,
   Paragraph,
@@ -54,15 +55,49 @@ function bodyCell(
   });
 }
 
-function headerBlock(tenant: any, title: string): Paragraph[] {
-  return [
+/** Try to fetch the logo bytes. Failures are non-fatal — the document
+ *  will simply render without an image. */
+async function fetchLogoBuffer(url?: string | null): Promise<Buffer | null> {
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
+  } catch {
+    return null;
+  }
+}
+
+async function brandingParagraphs(tenant: any): Promise<Paragraph[]> {
+  const out: Paragraph[] = [];
+
+  const logoBuffer = await fetchLogoBuffer(
+    tenant?.logo ?? tenant?.settings?.logoUrl,
+  );
+
+  if (logoBuffer) {
+    out.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new ImageRun({
+            data: logoBuffer,
+            transformation: { width: 140, height: 140 },
+          } as any),
+        ],
+      }),
+    );
+  }
+
+  out.push(
     new Paragraph({
       alignment: AlignmentType.CENTER,
       children: [
         new TextRun({
           text: tenant?.name ?? 'School',
           bold: true,
-          size: 32,
+          size: 36,
           color: PRIMARY,
         }),
       ],
@@ -80,6 +115,14 @@ function headerBlock(tenant: any, title: string): Paragraph[] {
       ],
     }),
     new Paragraph({ text: '' }),
+  );
+  return out;
+}
+
+async function headerBlock(tenant: any, title: string): Promise<Paragraph[]> {
+  const branding = await brandingParagraphs(tenant);
+  return [
+    ...branding,
     new Paragraph({
       alignment: AlignmentType.CENTER,
       heading: HeadingLevel.HEADING_1,
@@ -90,14 +133,15 @@ function headerBlock(tenant: any, title: string): Paragraph[] {
 }
 
 // ─── Fee Structure DOCX ──────────────────────────────────────────────
-export function buildFeeStructureDoc(input: {
+export async function buildFeeStructureDoc(input: {
   structure: any;
   tenant: any;
   currency: Partial<CurrencyContext>;
-}): Document {
-  const { structure, tenant, currency } = input;
+  pageOrientation?: 'portrait' | 'landscape';
+}): Promise<Document> {
+  const { structure, tenant, currency, pageOrientation } = input;
   const fmt = (n: number) => formatMoney(n, currency);
-  const children: any[] = headerBlock(
+  const children: any[] = await headerBlock(
     tenant,
     `Fee Structure — ${structure.name}`,
   );
@@ -106,7 +150,11 @@ export function buildFeeStructureDoc(input: {
     new Paragraph({
       children: [
         new TextRun({
-          text: `Year: ${structure.academicYear?.name ?? ''}${structure.academicTerm ? ' · Term: ' + structure.academicTerm.name : ''} · Scope: ${structure.scope}`,
+          text: `Year: ${structure.academicYear?.name ?? ''}${
+            structure.academicTerm
+              ? ' · Term: ' + structure.academicTerm.name
+              : ''
+          } · Scope: ${structure.scope}`,
           size: 20,
           color: MUTED,
         }),
@@ -206,13 +254,27 @@ export function buildFeeStructureDoc(input: {
   return new Document({
     creator: tenant?.name ?? 'Acadchestra',
     title: `Fee Structure — ${structure.name}`,
-    description: `Fee structure document for ${tenant?.name ?? 'tenant'}`,
-    sections: [{ properties: {}, children }],
+    description: `Fee structure document for ${tenant?.name ?? 'school'}`,
+    sections: [
+      {
+        properties: {
+          page: {
+            size: {
+              orientation:
+                pageOrientation === 'landscape'
+                  ? PageOrientation.LANDSCAPE
+                  : PageOrientation.PORTRAIT,
+            },
+          },
+        },
+        children,
+      },
+    ],
   });
 }
 
-// ─── Year Matrix DOCX (Early-Bird-Academy style) ─────────────────────
-export function buildFeeMatrixDoc(input: {
+// ─── Year Matrix DOCX ────────────────────────────────────────────────
+export async function buildFeeMatrixDoc(input: {
   year: { id: string; name: string };
   terms: Array<{ id: string; name: string }>;
   rows: Array<{
@@ -228,10 +290,14 @@ export function buildFeeMatrixDoc(input: {
   }>;
   tenant: any;
   currency: Partial<CurrencyContext>;
-}): Document {
-  const { year, terms, rows, tenant, currency } = input;
+  pageOrientation?: 'portrait' | 'landscape';
+}): Promise<Document> {
+  const { year, terms, rows, tenant, currency, pageOrientation } = input;
   const fmt = (n: number) => formatMoney(n, currency);
-  const children: any[] = headerBlock(tenant, `Fees Structure — ${year.name}`);
+  const children: any[] = await headerBlock(
+    tenant,
+    `Fees Structure — ${year.name}`,
+  );
 
   const headerRow = new TableRow({
     children: [
@@ -251,33 +317,23 @@ export function buildFeeMatrixDoc(input: {
         ...terms.map((t) => {
           const cell = r.perTerm[t.id];
           if (!cell) return bodyCell('—', { align: AlignmentType.RIGHT });
-          const text = `${fmt(cell.tuition)}\n${cell.extras
-            .map((e) => `${e.name}: ${fmt(e.amount)}`)
-            .join('\n')}\nTotal: ${fmt(cell.total)}`;
+          const text = `${fmt(cell.tuition)}${
+            cell.extras.length
+              ? '\n' +
+                cell.extras.map((e) => `${e.name}: ${fmt(e.amount)}`).join('\n')
+              : ''
+          }`;
           return bodyCell(text, { align: AlignmentType.RIGHT });
         }),
         bodyCell(fmt(yearTotal), { bold: true, align: AlignmentType.RIGHT }),
       ],
     });
   });
-  const totalsByTerm = terms.map((t) =>
-    rows.reduce((s, r) => s + (r.perTerm[t.id]?.total ?? 0), 0),
-  );
-  const grand = totalsByTerm.reduce((a, b) => a + b, 0);
-  const totalsRow = new TableRow({
-    children: [
-      bodyCell('Totals', { bold: true }),
-      ...totalsByTerm.map((v) =>
-        bodyCell(fmt(v), { bold: true, align: AlignmentType.RIGHT }),
-      ),
-      bodyCell(fmt(grand), { bold: true, align: AlignmentType.RIGHT }),
-    ],
-  });
 
   children.push(
     new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: [headerRow, ...bodyRows, totalsRow],
+      rows: [headerRow, ...bodyRows],
     }),
   );
 
@@ -289,7 +345,12 @@ export function buildFeeMatrixDoc(input: {
       {
         properties: {
           page: {
-            size: { orientation: PageOrientation.LANDSCAPE },
+            size: {
+              orientation:
+                pageOrientation === 'portrait'
+                  ? PageOrientation.PORTRAIT
+                  : PageOrientation.LANDSCAPE,
+            },
           },
         },
         children,
@@ -299,7 +360,7 @@ export function buildFeeMatrixDoc(input: {
 }
 
 // ─── Class+Term Slip DOCX ────────────────────────────────────────────
-export function buildFeeSlipDoc(input: {
+export async function buildFeeSlipDoc(input: {
   year: { name: string };
   term: { name: string };
   klass: { name: string; gradeName?: string };
@@ -313,15 +374,27 @@ export function buildFeeSlipDoc(input: {
   total: number;
   tenant: any;
   currency: Partial<CurrencyContext>;
-}): Document {
-  const { year, term, klass, components, total, tenant, currency } = input;
+  pageOrientation?: 'portrait' | 'landscape';
+}): Promise<Document> {
+  const {
+    year,
+    term,
+    klass,
+    components,
+    total,
+    tenant,
+    currency,
+    pageOrientation,
+  } = input;
   const fmt = (n: number) => formatMoney(n, currency);
-  const children: any[] = headerBlock(tenant, `Fee Slip — ${klass.name}`);
+  const children: any[] = await headerBlock(tenant, `Fee Slip — ${klass.name}`);
   children.push(
     new Paragraph({
       children: [
         new TextRun({
-          text: `Year: ${year.name} · Term: ${term.name}${klass.gradeName ? ' · Grade: ' + klass.gradeName : ''}`,
+          text: `Year: ${year.name} · Term: ${term.name}${
+            klass.gradeName ? ' · Grade: ' + klass.gradeName : ''
+          }`,
           color: MUTED,
           size: 20,
         }),
@@ -370,7 +443,21 @@ export function buildFeeSlipDoc(input: {
     creator: tenant?.name ?? 'Acadchestra',
     title: `Fee Slip — ${klass.name} ${term.name}`,
     description: 'Per-class per-term fee slip',
-    sections: [{ properties: {}, children }],
+    sections: [
+      {
+        properties: {
+          page: {
+            size: {
+              orientation:
+                pageOrientation === 'landscape'
+                  ? PageOrientation.LANDSCAPE
+                  : PageOrientation.PORTRAIT,
+            },
+          },
+        },
+        children,
+      },
+    ],
   });
 }
 
