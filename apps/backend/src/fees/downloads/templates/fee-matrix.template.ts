@@ -1,9 +1,7 @@
 /**
  * @file fee-matrix.template.ts
  * @description Compact grade × term matrix view of an entire year's fee
- *   structures. This is the parent-friendly "Early Bird Academy"-style
- *   single-page document that shows tuition + extras for every grade
- *   across each term.
+ *   structures.
  */
 
 import { html, layout } from './_layout';
@@ -27,10 +25,11 @@ export interface FeeMatrixInput {
   }>;
   tenant: any;
   currency: Partial<CurrencyContext>;
+  pageOrientation?: 'portrait' | 'landscape';
 }
 
 export function feeMatrixTemplate(input: FeeMatrixInput): string {
-  const { year, terms, rows, tenant, currency } = input;
+  const { year, terms, rows, tenant, currency, pageOrientation } = input;
   const fmt = (n: number) => formatMoney(n, currency);
   const primary = tenant?.settings?.primaryColor ?? '#1E40AF';
 
@@ -61,7 +60,6 @@ export function feeMatrixTemplate(input: FeeMatrixInput): string {
             return `<td class="right">
               <div><b>${fmt(cell.tuition)}</b></div>
               ${extras}
-              <div class="small accent" style="margin-top:4px;">Total ${fmt(cell.total)}</div>
             </td>`;
           })
           .join('')}
@@ -70,24 +68,14 @@ export function feeMatrixTemplate(input: FeeMatrixInput): string {
     })
     .join('');
 
-  const totalsByTerm = terms.map((t) =>
-    rows.reduce((s, r) => s + (r.perTerm[t.id]?.total ?? 0), 0),
-  );
-  const grandTotal = totalsByTerm.reduce((a, b) => a + b, 0);
-
   const body = `
-    <h1 class="accent">${html(tenant.name)} — Fees Structure ${html(year.name)}</h1>
-    <p class="muted small">Per-grade × per-term breakdown. Amounts shown are in ${html(currency.currency ?? 'KES')}.</p>
+    <h1 class="accent">Fees Structure ${html(year.name)}</h1>
+    <p class="muted small">Per-grade × per-term breakdown. Amounts shown are in ${html(
+      currency.currency ?? 'KES',
+    )}.</p>
     <table>
       <thead>${headerRow}</thead>
       <tbody>${tableRows}</tbody>
-      <tfoot>
-        <tr>
-          <td>Totals</td>
-          ${totalsByTerm.map((v) => `<td class="right">${fmt(v)}</td>`).join('')}
-          <td class="right">${fmt(grandTotal)}</td>
-        </tr>
-      </tfoot>
     </table>
     <div class="signoff">
       <div class="line">Authorised by</div>
@@ -100,6 +88,6 @@ export function feeMatrixTemplate(input: FeeMatrixInput): string {
     tenant,
     primaryColor: primary,
     body,
-    pageOrientation: 'landscape',
+    pageOrientation: pageOrientation ?? 'landscape',
   });
 }
