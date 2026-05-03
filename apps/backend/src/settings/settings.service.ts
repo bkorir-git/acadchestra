@@ -1,17 +1,17 @@
 /**
  * @file settings.service.ts
  * @description Tenant settings service — STABLE typed values only.
- *   Dynamic rules moved to Config . SuperAdmin can manage
+ *   Dynamic rules moved to Config. SuperAdmin can manage
  *   any tenant's settings via the ?tenantId= query param or /tenant/:id route.
  */
-
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ActivityAction, ActivityEntityType, Prisma } from '@prisma/client';
+import { ActivityAction, ActivityEntityType } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { ActivityService } from '../common/activity/activity.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
@@ -25,6 +25,8 @@ import {
 
 @Injectable()
 export class SettingsService {
+  private readonly logger = new Logger(SettingsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly activity: ActivityService,
@@ -86,11 +88,6 @@ export class SettingsService {
     return this.getSettings(actor, actor.tenantId);
   }
 
-  /**
-   * Patch a section. The frontend sends {section, values}; we validate the
-   * section name and whitelist allowed keys per section to prevent leaking
-   * dynamic-rule fields into TenantSettings.
-   */
   async patchSection(
     actor: RequestActor,
     section: 'localization' | 'branding' | 'communications',
@@ -104,13 +101,21 @@ export class SettingsService {
     if (!allowed) throw new BadRequestException(`Unknown section "${section}"`);
 
     const data: any = {};
-    for (const k of Object.keys(values)) {
+
+    for (const [k, v] of Object.entries(values)) {
+      if (v === undefined) continue;
+
       if (!allowed.includes(k as any)) {
         throw new BadRequestException(
           `Field "${k}" not allowed in section "${section}"`,
         );
       }
-      (data as any)[k] = (values as any)[k];
+
+      data[k] = v;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return this.prisma.tenantSettings.findUnique({ where: { tenantId } });
     }
 
     // Auto-fill currency symbol/decimals when currency changes
@@ -123,7 +128,7 @@ export class SettingsService {
       }
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
       const result = await tx.tenantSettings.update({
         where: { tenantId },
         data,
@@ -142,11 +147,8 @@ export class SettingsService {
       );
       return result;
     });
-
-    return updated;
   }
 
-  // SuperAdmin: list all schools for the selector
   async listTenantsForSettings(actor: RequestActor) {
     if (!isSuperAdmin(actor)) {
       throw new ForbiddenException('Only SuperAdmin can list all tenants');
@@ -205,7 +207,5 @@ const SECTION_ALLOWED_FIELDS: Record<string, (keyof UpdateSettingsDto)[]> = {
     'secondaryColor',
     'brandTagline',
   ],
-  communications: [
-    // Reserved for stable identity fields (sender name/address) once added to schema
-  ],
+  communications: [],
 };
