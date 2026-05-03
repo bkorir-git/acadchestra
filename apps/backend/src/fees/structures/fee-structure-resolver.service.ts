@@ -5,7 +5,7 @@
  *   and by the BillingService internally.
  */
 
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import {
@@ -16,6 +16,8 @@ import {
 
 @Injectable()
 export class FeeStructureResolverService {
+  private readonly logger = new Logger(FeeStructureResolverService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async loadStructures(
@@ -29,20 +31,44 @@ export class FeeStructureResolverService {
       academicYearId,
       ...(feeStructureId
         ? { id: feeStructureId }
-        : {
-            ...(academicTermId
-              ? { OR: [{ academicTermId }, { academicTermId: null }] }
-              : {}),
-          }),
+        : academicTermId
+          ? {
+              OR: [{ academicTermId }, { academicTermId: null }],
+            }
+          : {}),
     };
+
     const rows = await this.prisma.feeStructure.findMany({
       where,
       include: {
         feeComponents: { orderBy: { sortOrder: 'asc' } },
-        levels: { include: { components: { orderBy: { sortOrder: 'asc' } } } },
+        levels: {
+          include: {
+            components: { orderBy: { sortOrder: 'asc' } },
+          },
+        },
       },
     });
-    return rows.map((r) => ({
+
+    // Enrich levels with grade names (for the name-based fallback in the
+    // pure resolver). One round-trip per tenant per call — cheap.
+    const gradeIds = Array.from(
+      new Set(
+        rows.flatMap((r) =>
+          r.levels.map((l) => l.gradeId).filter((g): g is string => !!g),
+        ),
+      ),
+    );
+    const gradeNameMap = new Map<string, string>();
+    if (gradeIds.length) {
+      const grades = await this.prisma.grade.findMany({
+        where: { id: { in: gradeIds }, tenantId },
+        select: { id: true, name: true },
+      });
+      for (const g of grades) gradeNameMap.set(g.id, g.name);
+    }
+
+    const mapped: ScopeStructure[] = rows.map((r) => ({
       id: r.id,
       name: r.name,
       scope: r.scope,
@@ -69,6 +95,7 @@ export class FeeStructureResolverService {
         id: l.id,
         classId: l.classId,
         gradeId: l.gradeId,
+        gradeName: l.gradeId ? (gradeNameMap.get(l.gradeId) ?? null) : null,
         levelLabel: l.levelLabel,
         totalAmount: l.totalAmount,
         components: l.components.map((c) => ({
@@ -86,9 +113,14 @@ export class FeeStructureResolverService {
         })),
       })),
     }));
+
+    this.logger.debug(
+      `loadStructures(year=${academicYearId}, term=${academicTermId ?? 'all'}): ${mapped.length} structure(s)`,
+    );
+
+    return mapped;
   }
 
-  /** Endpoint helper: resolve fee for a specific student. */
   async resolveForStudentId(
     tenantId: string,
     studentId: string,
@@ -109,12 +141,14 @@ export class FeeStructureResolverService {
       yearId,
       academicTermId ?? null,
     );
+
     return resolveStructureForStudent(
       {
         id: student.id,
         classId: student.classId,
         streamId: student.streamId,
         gradeId: student.class.gradeId,
+        gradeName: student.class.grade?.name ?? null,
         curriculumId: student.class.grade.curriculumId,
       },
       structures,
