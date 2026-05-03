@@ -5,6 +5,20 @@
  *   single transaction, idempotent per (student, structure). Auto-locks
  *   used structures so their snapshot stays stable.
  *
+ *     - Resolver now receives the student's grade name, enabling the
+ *       SCHOOL_WIDE_LEVEL_GRADE_NAME fallback. This is the root fix for
+ *       the "No structure matches this student" symptom on the matrix.
+ *     - When a billing run is started without an academic term, we no
+ *       longer silently load only term-less structures: we now load all
+ *       structures for the year and let the resolver pick.
+ *     - Preview entries now expose `structureId`, `structureName` and a
+ *       human-readable `reason` so the UI can render names (not ids) and
+ *       admins can audit the resolution path.
+ *     - Skip reasons are now admin-friendly strings instead of internal
+ *       jargon ("No structure matches this student" → "We couldn't find
+ *       a fee structure that applies to this student. Check your matrix
+ *       has a row for the student's grade.").
+ *
  *   Invariants:
  *     - Never bills inactive students.
  *     - Never bills in archived years or financially-locked terms.
@@ -89,6 +103,17 @@ export interface ExecuteResult {
   invoicesIssued: number;
 }
 
+const REASON_TEXT: Record<string, string> = {
+  STREAM_SPECIFIC: "Matched on the student's stream",
+  CLASS_SPECIFIC: "Matched on the student's class",
+  GRADE_SPECIFIC: "Matched on the student's grade",
+  CURRICULUM_WIDE: "Matched on the student's curriculum",
+  SCHOOL_WIDE_LEVEL_CLASS: 'Matched on a school-wide row for this class',
+  SCHOOL_WIDE_LEVEL_GRADE: 'Matched on a school-wide row for this grade',
+  SCHOOL_WIDE_LEVEL_GRADE_NAME: 'Matched on a school-wide row by grade name',
+  SCHOOL_WIDE_FLAT: 'Matched on a flat school-wide structure',
+};
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
@@ -122,21 +147,19 @@ export class BillingService {
     );
 
     const entries: PreviewEntry[] = [];
-    let eligible = 0,
-      skipped = 0,
-      alreadyBilled = 0,
-      totalAmount = 0;
+    let eligible = 0;
+    let skipped = 0;
+    let alreadyBilled = 0;
+    let totalAmount = 0;
 
     for (const stu of students) {
-      const resolution = this.resolver['resolveAgainstStructures']
-        ? null
-        : null;
       const res = resolveStructureForStudent(
         {
           id: stu.id,
           classId: stu.classId,
           streamId: stu.streamId,
           gradeId: stu.class.gradeId,
+          gradeName: stu.class.grade?.name ?? null,
           curriculumId: stu.class.grade.curriculumId,
         },
         structures,
@@ -159,7 +182,10 @@ export class BillingService {
           resolution: null,
           totalToBill: 0,
           alreadyBilled: false,
-          skipReason: 'No structure matches this student',
+          skipReason:
+            "We couldn't find a fee structure that applies to this student. " +
+            "Check that your matrix has a row for the student's grade and " +
+            'that the matrix is for the same curriculum.',
         });
         continue;
       }
@@ -175,11 +201,11 @@ export class BillingService {
             levelId: res.levelId,
             levelLabel: res.levelLabel,
             totalAmount: res.totalAmount,
-            reason: res.reason,
+            reason: REASON_TEXT[res.reason] ?? res.reason,
           },
           totalToBill: 0,
           alreadyBilled: true,
-          skipReason: 'Already billed for this structure',
+          skipReason: 'This student has already been billed for this structure',
         });
         continue;
       }
@@ -193,7 +219,7 @@ export class BillingService {
           levelId: res.levelId,
           levelLabel: res.levelLabel,
           totalAmount: res.totalAmount,
-          reason: res.reason,
+          reason: REASON_TEXT[res.reason] ?? res.reason,
         },
         totalToBill: res.totalAmount,
         alreadyBilled: false,
@@ -231,9 +257,13 @@ export class BillingService {
     );
 
     if (!structures.length)
-      throw new BadRequestException('No eligible fee structures found');
+      throw new BadRequestException(
+        'No fee structures found for the selected year and term',
+      );
     if (!students.length)
-      throw new BadRequestException('No eligible students found');
+      throw new BadRequestException(
+        'No active students were found for the selected scope',
+      );
 
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -249,12 +279,12 @@ export class BillingService {
 
     const result = await this.prisma.$transaction(
       async (tx) => {
-        let billed = 0,
-          skipped = 0,
-          alreadyBilled = 0,
-          totalAmount = 0,
-          ledgerEntries = 0,
-          invoicesIssued = 0;
+        let billed = 0;
+        let skipped = 0;
+        let alreadyBilled = 0;
+        let totalAmount = 0;
+        let ledgerEntries = 0;
+        let invoicesIssued = 0;
 
         const yearStart = new Date(`${new Date().getFullYear()}-01-01`);
         let invoiceSeq = await tx.invoice.count({
@@ -268,6 +298,7 @@ export class BillingService {
               classId: stu.classId,
               streamId: stu.streamId,
               gradeId: stu.class.gradeId,
+              gradeName: stu.class.grade?.name ?? null,
               curriculumId: stu.class.grade.curriculumId,
             },
             structures,
@@ -491,8 +522,9 @@ export class BillingService {
       dto.feeStructureId,
     );
 
-    this.logger.debug(`loadStructures returned ${structures.length} structures`, 
-  JSON.stringify(structures.map(s => ({ id: s.id, name: s.name, termId: s.academicTermId, gradeId: s.gradeId, scope: s.scope }))));
+    this.logger.debug(
+      `loadContext returned ${structures.length} structure(s) for billing`,
+    );
 
     const studentRows = await this.prisma.student.findMany({
       where: {
