@@ -40,7 +40,7 @@ import { RolesModule } from './common/roles/roles.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { AcademicModule } from './academic/academic.module';
 import { TeachersModule } from './teachers/teachers.module';
-// import { FeesModule } from './fees/fees.module';
+import { FeesModule } from './fees/fees.module';
 import { SettingsModule } from './settings/settings.module';
 import { BulkOperationsModule } from './bulk-operations/bulk-operations.module';
 import { SchedulersModule } from './schedulers/schedulers.module';
@@ -78,7 +78,7 @@ import { BackupsModule } from './backups/backups.module';
     DashboardModule,
     AcademicModule,
     TeachersModule,
-    // FeesModule,
+    FeesModule,
     SettingsModule,
     BulkOperationsModule,
     SchedulersModule,
