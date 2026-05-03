@@ -30,6 +30,8 @@ import {
 import { CurrencyContext } from '../common/currency.util';
 import { roundMoney } from '../common/fee-math.util';
 
+export type Orientation = 'portrait' | 'landscape';
+
 @Injectable()
 export class FeeDownloadsService {
   constructor(
@@ -44,7 +46,9 @@ export class FeeDownloadsService {
       include: { settings: true },
     });
     if (!t) throw new NotFoundException('Tenant not found');
-    return t;
+    // Surface the logo url consistently — templates use `tenant.logo`.
+    const logo = t.logo ?? t.settings?.logoUrl ?? null;
+    return { ...t, logo };
   }
 
   private currencyOf(tenant: any): Partial<CurrencyContext> {
@@ -84,26 +88,44 @@ export class FeeDownloadsService {
     return { ...s, totalAmount };
   }
 
-  async structurePdf(tenantId: string, id: string) {
+  async structurePdf(
+    tenantId: string,
+    id: string,
+    orientation: Orientation = 'portrait',
+  ) {
     const tenant = await this.loadTenant(tenantId);
     const structure = await this.loadStructure(tenantId, id);
     const html = feeStructureTemplate({
       structure,
       tenant,
       currency: this.currencyOf(tenant),
+      pageOrientation: orientation,
     });
-    return this.pdf.renderHtml(html);
+    return {
+      buffer: await this.pdf.renderHtml(html, {
+        landscape: orientation === 'landscape',
+      }),
+      filenameBase: structure.name,
+    };
   }
 
-  async structureWord(tenantId: string, id: string) {
+  async structureWord(
+    tenantId: string,
+    id: string,
+    orientation: Orientation = 'portrait',
+  ) {
     const tenant = await this.loadTenant(tenantId);
     const structure = await this.loadStructure(tenantId, id);
-    const doc = buildFeeStructureDoc({
+    const doc = await buildFeeStructureDoc({
       structure,
       tenant,
       currency: this.currencyOf(tenant),
+      pageOrientation: orientation,
     });
-    return this.word.render(doc);
+    return {
+      buffer: await this.word.render(doc),
+      filenameBase: structure.name,
+    };
   }
 
   // ─── Year matrix ────────────────────────────────────────────────
@@ -135,10 +157,12 @@ export class FeeDownloadsService {
             class: { select: { id: true, name: true, gradeId: true } },
           },
         },
+        class: { select: { id: true, name: true } },
+        grade: { select: { id: true, name: true } },
+        curriculum: { select: { id: true, name: true } },
       },
     });
 
-    // Build row keys: prefer levels' classId, fallback to gradeId.
     type Row = {
       label: string;
       classId?: string;
@@ -183,7 +207,7 @@ export class FeeDownloadsService {
         };
         rowMap.set(key, row);
       }
-      // CLASS_SPECIFIC / GRADE_SPECIFIC / CURRICULUM_WIDE: flat components
+      // CLASS_SPECIFIC / GRADE_SPECIFIC / CURRICULUM_WIDE
       if (s.scope !== 'SCHOOL_WIDE' && s.feeComponents.length) {
         const key = s.classId ?? s.gradeId ?? s.curriculumId ?? s.id;
         const label =
@@ -223,7 +247,7 @@ export class FeeDownloadsService {
         termNumber: t.termNumber,
       })),
       rows: Array.from(rowMap.values()).sort((a, b) =>
-        a.label.localeCompare(b.label),
+        a.label.localeCompare(b.label, undefined, { numeric: true }),
       ),
     };
   }
@@ -232,6 +256,7 @@ export class FeeDownloadsService {
     tenantId: string,
     yearId: string,
     opts: { curriculumId?: string; gradeId?: string; classId?: string } = {},
+    orientation: Orientation = 'landscape',
   ) {
     const tenant = await this.loadTenant(tenantId);
     const matrix = await this.loadMatrix(tenantId, yearId, opts);
@@ -239,23 +264,34 @@ export class FeeDownloadsService {
       ...matrix,
       tenant,
       currency: this.currencyOf(tenant),
+      pageOrientation: orientation,
     });
-    return this.pdf.renderHtml(html, { landscape: true });
+    return {
+      buffer: await this.pdf.renderHtml(html, {
+        landscape: orientation === 'landscape',
+      }),
+      filenameBase: `Fees Structure - ${matrix.year.name}`,
+    };
   }
 
   async yearMatrixWord(
     tenantId: string,
     yearId: string,
     opts: { curriculumId?: string; gradeId?: string; classId?: string } = {},
+    orientation: Orientation = 'landscape',
   ) {
     const tenant = await this.loadTenant(tenantId);
     const matrix = await this.loadMatrix(tenantId, yearId, opts);
-    const doc = buildFeeMatrixDoc({
+    const doc = await buildFeeMatrixDoc({
       ...matrix,
       tenant,
       currency: this.currencyOf(tenant),
+      pageOrientation: orientation,
     });
-    return this.word.render(doc);
+    return {
+      buffer: await this.word.render(doc),
+      filenameBase: `Fees Structure - ${matrix.year.name}`,
+    };
   }
 
   // ─── Class + Term slip ─────────────────────────────────────────
@@ -281,7 +317,6 @@ export class FeeDownloadsService {
     if (!term) throw new NotFoundException('Term not found');
     if (!klass) throw new NotFoundException('Class not found');
 
-    // Find applicable structures for this class+term.
     const structures = await this.prisma.feeStructure.findMany({
       where: {
         tenantId,
@@ -312,9 +347,19 @@ export class FeeDownloadsService {
 
     for (const s of structures) {
       if (s.scope === 'SCHOOL_WIDE') {
+        // curriculum compatibility — a school-wide matrix is only safe
+        // to apply if it isn't constrained to a different curriculum.
+        if (s.curriculumId && s.curriculumId !== klass.grade.curriculumId) {
+          continue;
+        }
         const lvl =
           s.levels.find((l) => l.classId === classId) ??
-          s.levels.find((l) => l.gradeId === klass.gradeId);
+          s.levels.find((l) => l.gradeId === klass.gradeId) ??
+          s.levels.find(
+            (l) =>
+              (l.levelLabel ?? '').trim().toLowerCase() ===
+              (klass.grade?.name ?? '').trim().toLowerCase(),
+          );
         if (lvl) {
           for (const c of lvl.components) {
             components.push({
@@ -359,9 +404,15 @@ export class FeeDownloadsService {
     yearId: string,
     termId: string,
     classId: string,
+    orientation: Orientation = 'portrait',
   ) {
     const tenant = await this.loadTenant(tenantId);
-    const slip = await this.loadClassTermSlip(tenantId, yearId, termId, classId);
+    const slip = await this.loadClassTermSlip(
+      tenantId,
+      yearId,
+      termId,
+      classId,
+    );
     const paymentRules = await this.prisma.feePaymentRule.findMany({
       where: {
         tenantId,
@@ -378,8 +429,14 @@ export class FeeDownloadsService {
       })),
       tenant,
       currency: this.currencyOf(tenant),
+      pageOrientation: orientation,
     });
-    return this.pdf.renderHtml(html);
+    return {
+      buffer: await this.pdf.renderHtml(html, {
+        landscape: orientation === 'landscape',
+      }),
+      filenameBase: `Fee Slip - ${slip.klass.name} - ${slip.term.name}`,
+    };
   }
 
   async classTermSlipWord(
@@ -387,10 +444,16 @@ export class FeeDownloadsService {
     yearId: string,
     termId: string,
     classId: string,
+    orientation: Orientation = 'portrait',
   ) {
     const tenant = await this.loadTenant(tenantId);
-    const slip = await this.loadClassTermSlip(tenantId, yearId, termId, classId);
-    const doc = buildFeeSlipDoc({
+    const slip = await this.loadClassTermSlip(
+      tenantId,
+      yearId,
+      termId,
+      classId,
+    );
+    const doc = await buildFeeSlipDoc({
       year: slip.year,
       term: { name: slip.term.name },
       klass: slip.klass,
@@ -398,8 +461,12 @@ export class FeeDownloadsService {
       total: slip.total,
       tenant,
       currency: this.currencyOf(tenant),
+      pageOrientation: orientation,
     });
-    return this.word.render(doc);
+    return {
+      buffer: await this.word.render(doc),
+      filenameBase: `Fee Slip - ${slip.klass.name} - ${slip.term.name}`,
+    };
   }
 
   // ─── Invoice PDF ───────────────────────────────────────────────
@@ -423,7 +490,10 @@ export class FeeDownloadsService {
       tenant,
       currency: this.currencyOf(tenant),
     });
-    return this.pdf.renderHtml(html);
+    return {
+      buffer: await this.pdf.renderHtml(html),
+      filenameBase: `Invoice ${invoice.invoiceNumber}`,
+    };
   }
 
   // ─── Search index for the downloads UI ─────────────────────────
@@ -435,40 +505,69 @@ export class FeeDownloadsService {
     terms: Array<{ id: string; name: string; academicYearId: string }>;
     curriculums: Array<{ id: string; name: string }>;
     grades: Array<{ id: string; name: string; curriculumId: string }>;
-    classes: Array<{ id: string; name: string; gradeId: string; academicYearId: string }>;
+    classes: Array<{
+      id: string;
+      name: string;
+      gradeId: string;
+      academicYearId: string;
+    }>;
+    structures: Array<{
+      id: string;
+      name: string;
+      academicYearId: string;
+      academicTermId: string | null;
+      scope: string;
+    }>;
   }> {
-    const [years, terms, curriculums, grades, classes] = await Promise.all([
-      this.prisma.academicYear.findMany({
-        where: { tenantId },
-        select: { id: true, name: true, isCurrent: true },
-        orderBy: { startDate: 'desc' },
-      }),
-      this.prisma.academicTerm.findMany({
-        where: { tenantId, ...(yearId && { academicYearId: yearId }) },
-        select: { id: true, name: true, academicYearId: true },
-        orderBy: { termNumber: 'asc' },
-      }),
-      this.prisma.curriculum.findMany({
-        where: { tenantId, isActive: true },
-        select: { id: true, name: true },
-        orderBy: { name: 'asc' },
-      }),
-      this.prisma.grade.findMany({
-        where: { tenantId },
-        select: { id: true, name: true, curriculumId: true, levelOrder: true },
-        orderBy: [{ curriculumId: 'asc' }, { levelOrder: 'asc' }],
-      }),
-      this.prisma.class.findMany({
-        where: { tenantId, ...(yearId && { academicYearId: yearId }) },
-        select: {
-          id: true,
-          name: true,
-          gradeId: true,
-          academicYearId: true,
-        },
-        orderBy: { name: 'asc' },
-      }),
-    ]);
-    return { years, terms, curriculums, grades, classes };
+    const [years, terms, curriculums, grades, classes, structures] =
+      await Promise.all([
+        this.prisma.academicYear.findMany({
+          where: { tenantId },
+          select: { id: true, name: true, isCurrent: true },
+          orderBy: { startDate: 'desc' },
+        }),
+        this.prisma.academicTerm.findMany({
+          where: { tenantId, ...(yearId && { academicYearId: yearId }) },
+          select: { id: true, name: true, academicYearId: true },
+          orderBy: { termNumber: 'asc' },
+        }),
+        this.prisma.curriculum.findMany({
+          where: { tenantId, isActive: true },
+          select: { id: true, name: true },
+          orderBy: { name: 'asc' },
+        }),
+        this.prisma.grade.findMany({
+          where: { tenantId },
+          select: {
+            id: true,
+            name: true,
+            curriculumId: true,
+            levelOrder: true,
+          },
+          orderBy: [{ curriculumId: 'asc' }, { levelOrder: 'asc' }],
+        }),
+        this.prisma.class.findMany({
+          where: { tenantId, ...(yearId && { academicYearId: yearId }) },
+          select: {
+            id: true,
+            name: true,
+            gradeId: true,
+            academicYearId: true,
+          },
+          orderBy: { name: 'asc' },
+        }),
+        this.prisma.feeStructure.findMany({
+          where: { tenantId, ...(yearId && { academicYearId: yearId }) },
+          select: {
+            id: true,
+            name: true,
+            academicYearId: true,
+            academicTermId: true,
+            scope: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+      ]);
+    return { years, terms, curriculums, grades, classes, structures };
   }
 }
