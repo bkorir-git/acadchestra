@@ -10,17 +10,21 @@
  *   - Communications identity (email sender name/address)
  */
 
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsEnum,
   IsHexColor,
+  IsIn,
   IsInt,
+  IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { CurrencyPosition, TimeFormat } from '@prisma/client';
 
@@ -31,15 +35,18 @@ export class UpdateSettingsDto {
   @IsString()
   @MaxLength(3)
   currency?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(10)
   currencySymbol?: string;
+
   @ApiPropertyOptional({ enum: CurrencyPosition })
   @IsOptional()
   @IsEnum(CurrencyPosition)
   currencyPosition?: CurrencyPosition;
+
   @ApiPropertyOptional()
   @IsOptional()
   @Type(() => Number)
@@ -47,13 +54,27 @@ export class UpdateSettingsDto {
   @Min(0)
   @Max(4)
   currencyDecimals?: number;
-  @ApiPropertyOptional() @IsOptional() @IsString() timezone?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() locale?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() dateFormat?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  timezone?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  locale?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  dateFormat?: string;
+
   @ApiPropertyOptional({ enum: TimeFormat })
   @IsOptional()
   @IsEnum(TimeFormat)
   timeFormat?: TimeFormat;
+
   @ApiPropertyOptional()
   @IsOptional()
   @Type(() => Number)
@@ -63,10 +84,26 @@ export class UpdateSettingsDto {
   firstDayOfWeek?: number;
 
   // ── Branding ──
-  @ApiPropertyOptional() @IsOptional() @IsString() logoUrl?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() faviconUrl?: string;
-  @ApiPropertyOptional() @IsOptional() @IsHexColor() primaryColor?: string;
-  @ApiPropertyOptional() @IsOptional() @IsHexColor() secondaryColor?: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  logoUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  faviconUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsHexColor()
+  primaryColor?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsHexColor()
+  secondaryColor?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -74,13 +111,21 @@ export class UpdateSettingsDto {
   brandTagline?: string;
 
   // ── Communications IDENTITY (NOT toggles — those are config) ──
-  // These are stable values — sender display name / address that branded
-  // emails are sent from.
+  // Stable values — sender display name / address for branded emails.
   // Actual on/off toggles live in Config.comms.*.
 }
 
 export class SectionPatchDto {
-  /** Section identifier — used for audit logging and validation. */
+
+  @ApiProperty({ enum: ['localization', 'branding', 'communications'] })
+  @IsNotEmpty()
+  @IsString()
+  @IsIn(['localization', 'branding', 'communications'])
   section!: 'localization' | 'branding' | 'communications';
+
+  @ApiProperty({ type: () => UpdateSettingsDto })
+  @IsObject()
+  @ValidateNested()
+  @Type(() => UpdateSettingsDto)
   values!: Partial<UpdateSettingsDto>;
 }
