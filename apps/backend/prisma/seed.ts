@@ -21,6 +21,7 @@ import {
   ensureSuperAdminRole,
   SYSTEM_ROLES,
 } from './seeds/system-roles.seed';
+import { seedDemoSchoolPopulation } from './seeds/demo-school-population.seed';
 
 const prisma = new PrismaClient();
 
@@ -72,11 +73,15 @@ async function main() {
       create: { ...role, isSystem: true, tenantId: tenant.id },
     });
   }
-  console.log(`✅ System roles: ${SYSTEM_ROLES.length + 1} ensured for demo tenant`);
+  console.log(
+    `✅ System roles: ${SYSTEM_ROLES.length + 1} ensured for demo tenant`,
+  );
 
   // Backfill across all tenants (no-op for fresh DB)
   const ensured = await ensureSystemRolesForAllTenants(prisma);
-  console.log(`✅ Backfill across all tenants: checked ${ensured.tenantsChecked}, created ${ensured.rolesCreated}`);
+  console.log(
+    `✅ Backfill across all tenants: checked ${ensured.tenantsChecked}, created ${ensured.rolesCreated}`,
+  );
 
   // 6. Demo SuperAdmin user
   const hashed = await bcrypt.hash('Admin123!', 12);
@@ -135,6 +140,9 @@ async function main() {
   } else {
     console.log('ℹ️  Backup policy already exists, skipped');
   }
+
+  // await seedDemoSchoolPopulation(prisma);
+  // console.log('✅ Demo school population seeded');
 
   console.log('\n🎉 Seeding complete!');
   console.log('\n📋 Demo credentials:');

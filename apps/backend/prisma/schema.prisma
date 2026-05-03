@@ -505,16 +505,16 @@ model Tenant {
   updatedAt DateTime @updatedAt
 
   // ─── Relations ────────────────────────────────────────────────────────────
-  settings          TenantSettings?
-  configs           Config[]
-  policies          Policy[]
+  settings            TenantSettings?
+  configs             Config[]
+  policies            Policy[]
   passwordResetTokens PasswordResetToken[]
-  admissionCounter  AdmissionCounter?
+  admissionCounter    AdmissionCounter?
 
-  users    User[]
-  roles    Role[]
-  teachers Teacher[]
-  uploadAssets    UploadAsset[]
+  users        User[]
+  roles        Role[]
+  teachers     Teacher[]
+  uploadAssets UploadAsset[]
 
   curriculums           Curriculum[]
   grades                Grade[]
@@ -532,6 +532,7 @@ model Tenant {
   feeStructures        FeeStructure[]
   feeStructureVersions FeeStructureVersion[]
   feeStructureLevels   FeeStructureLevel[]
+  feeCategories        FeeCategoryEntity[]
   feePaymentRules      FeePaymentRule[]
   studentFees          StudentFee[]
   feePayments          FeePayment[]
@@ -539,9 +540,9 @@ model Tenant {
   invoices             Invoice[]
   studentDiscounts     StudentDiscount[]
 
-  examinations    Examination[]
-  promotions      StudentPromotion[]
-  promotionPlans  PromotionPlan[]
+  examinations   Examination[]
+  promotions     StudentPromotion[]
+  promotionPlans PromotionPlan[]
 
   attendanceSessions AttendanceSession[]
   attendanceRecords  AttendanceRecord[]
@@ -589,12 +590,13 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  userRoles     UserRole[]
-  student       Student?
-  teacher       Teacher?
-  guardian      Guardian?
-  activityLogs  ActivityLog[]
-  notifications Notification[]
+  userRoles           UserRole[]
+  student             Student?
+  teacher             Teacher?
+  guardian            Guardian?
+  activityLogs        ActivityLog[]
+  notifications       Notification[]
+  feeLedgerRecorded   FeeLedger[]          @relation("FeeLedgerRecorder")
   passwordResetTokens PasswordResetToken[]
 
   @@index([tenantId, isActive])
@@ -696,13 +698,13 @@ model TenantSettings {
 // =============================================================================
 
 model Config {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   tenantId    String
   category    String // 'academic' | 'student' | 'guardian' | 'fee' | 'security' | 'comms' | 'features'
   key         String
   value       Json
   description String?
-  isLocked    Boolean  @default(false) // if true, only SuperAdmin can change
+  isLocked    Boolean @default(false) // if true, only SuperAdmin can change
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -715,14 +717,14 @@ model Config {
 }
 
 model Policy {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   tenantId    String
   name        String
   category    String
   description String?
   rules       Json // expression tree (JSONLogic / custom DSL)
-  isActive    Boolean  @default(true)
-  priority    Int      @default(100)
+  isActive    Boolean @default(true)
+  priority    Int     @default(100)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -734,17 +736,16 @@ model Policy {
   @@map("policies")
 }
 
-
 model PasswordResetToken {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique          // SHA-256 of the raw token, never raw
+  id        String    @id @default(cuid())
+  tokenHash String    @unique // SHA-256 of the raw token, never raw
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   expiresAt DateTime
-  usedAt    DateTime?                 // null = unused, set on consumption
-  createdAt DateTime @default(now())
+  usedAt    DateTime? // null = unused, set on consumption
+  createdAt DateTime  @default(now())
 
   @@index([userId])
   @@index([tenantId, createdAt])
@@ -884,6 +885,7 @@ model AcademicYear {
   feeStructures         FeeStructure[]
   studentClassHistories StudentClassHistory[]
   promotions            StudentPromotion[]
+  invoices              Invoice[]
 
   @@unique([name, tenantId])
   @@index([tenantId, isCurrent, status])
@@ -926,7 +928,7 @@ model AcademicTerm {
   feePaymentRules    FeePaymentRule[]
   attendanceSessions AttendanceSession[]
   examinations       Examination[]
-  invoices           Invoice[]
+  invoices           Invoice[]           @relation("AcademicTermInvoices")
   academicPeriods    AcademicPeriod[]
 
   @@unique([academicYearId, termNumber])
@@ -1103,10 +1105,10 @@ model AdmissionCounter {
 // will never have a User account. When a portal account is needed, `userId` is
 // set lazily.
 model Student {
-  id              String    @id @default(cuid())
-  admissionNumber String    // immutable lifetime ID — issued by AdmissionCounter
-  rollNumber      String?   // optional, per-class register number, config-driven
-  admissionDate   DateTime  @default(now())
+  id              String   @id @default(cuid())
+  admissionNumber String // immutable lifetime ID — issued by AdmissionCounter
+  rollNumber      String? // optional, per-class register number, config-driven
+  admissionDate   DateTime @default(now())
 
   firstName   String
   middleName  String?
@@ -1160,18 +1162,18 @@ model Student {
 }
 
 model Guardian {
-  id          String  @id @default(cuid())
-  firstName   String
-  lastName    String
-  middleName  String?
-  email       String?
-  phone       String
-  altPhone    String?
-  occupation  String?
-  employer    String?
-  address     String?
-  nationalId  String?
-  photoUrl    String?
+  id         String  @id @default(cuid())
+  firstName  String
+  lastName   String
+  middleName String?
+  email      String?
+  phone      String
+  altPhone   String?
+  occupation String?
+  employer   String?
+  address    String?
+  nationalId String?
+  photoUrl   String?
 
   // Optional User link for parent portal access
   userId String? @unique
@@ -1453,6 +1455,31 @@ model FeeStructureVersion {
   @@map("fee_structure_versions")
 }
 
+model FeeCategoryEntity {
+  id           String      @id @default(cuid())
+  tenantId     String
+  name         String // "Boarding Optional", "STEM Lab"
+  code         String // slug: "boarding-optional"
+  baseCategory FeeCategory // groups under the system enum
+  description  String?
+  color        String? // for UI badges
+  icon         String?
+  isActive     Boolean     @default(true)
+  sortOrder    Int         @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  components      FeeComponent[]
+  levelComponents FeeLevelComponent[] @relation("LevelCategoryEntity")
+
+  @@unique([tenantId, code])
+  @@index([tenantId, isActive])
+  @@map("fee_categories")
+}
+
 model FeeComponent {
   id           String      @id @default(cuid())
   name         String
@@ -1468,6 +1495,9 @@ model FeeComponent {
 
   feeStructureId String
   feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+
+  categoryId     String?
+  categoryEntity FeeCategoryEntity? @relation(fields: [categoryId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1517,6 +1547,9 @@ model FeeLevelComponent {
   lateFee      Float?      @default(0)
   sortOrder    Int         @default(0)
   priority     Int         @default(100)
+
+  categoryId     String?
+  categoryEntity FeeCategoryEntity? @relation("LevelCategoryEntity", fields: [categoryId], references: [id])
 
   feeStructureLevelId String
   level               FeeStructureLevel @relation(fields: [feeStructureLevelId], references: [id], onDelete: Cascade)
@@ -1614,8 +1647,11 @@ model Invoice {
   studentId String
   student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
+  academicYearId String?
+  academicYear   AcademicYear? @relation(fields: [academicYearId], references: [id])
+
   academicTermId String?
-  academicTerm   AcademicTerm? @relation(fields: [academicTermId], references: [id])
+  academicTerm   AcademicTerm? @relation("AcademicTermInvoices", fields: [academicTermId], references: [id])
 
   feeStructureId String?
   feeStructure   FeeStructure? @relation(fields: [feeStructureId], references: [id])
@@ -1772,6 +1808,7 @@ model FeeLedger {
   reference    String?
   metadata     Json?
   recordedById String?
+  recordedBy   User?           @relation("FeeLedgerRecorder", fields: [recordedById], references: [id])
   occurredAt   DateTime        @default(now())
 
   studentId String
@@ -1903,11 +1940,11 @@ model AttendanceRecord {
 
 model EmailTemplate {
   id          String  @id @default(cuid())
-  code        String  // 'welcome' | 'password_reset' | 'fee_reminder' | ...
+  code        String // 'welcome' | 'password_reset' | 'fee_reminder' | ...
   name        String
   description String?
   subject     String
-  body        String  // mustache / handlebars-style placeholders
+  body        String // mustache / handlebars-style placeholders
   isHtml      Boolean @default(true)
   isActive    Boolean @default(true)
   isSystem    Boolean @default(false) // SuperAdmin-managed defaults
@@ -1926,17 +1963,17 @@ model EmailTemplate {
 }
 
 model EmailDelivery {
-  id              String      @id @default(cuid())
-  toEmail         String
-  toName          String?
-  subject         String
-  bodySnapshot    String
-  status          EmailStatus @default(QUEUED)
+  id                String      @id @default(cuid())
+  toEmail           String
+  toName            String?
+  subject           String
+  bodySnapshot      String
+  status            EmailStatus @default(QUEUED)
   providerMessageId String?
-  errorMessage    String?
-  sentAt          DateTime?
-  deliveredAt     DateTime?
-  context         Json?       // template variables snapshot
+  errorMessage      String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  context           Json? // template variables snapshot
 
   templateId String?
   template   EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
@@ -1987,16 +2024,16 @@ model Notification {
 model UploadAsset {
   id            String         @id @default(cuid())
   category      UploadCategory
-  fileName      String         // original filename from user
-  storedName    String         // randomized name on disk/object storage
+  fileName      String // original filename from user
+  storedName    String // randomized name on disk/object storage
   mimeType      String
   sizeBytes     Int
-  checksum      String?        // sha256 hex
-  storagePath   String         // opaque key, e.g. "tenants/abc/student_photo/xyz.png"
+  checksum      String? // sha256 hex
+  storagePath   String // opaque key, e.g. "tenants/abc/student_photo/xyz.png"
   storageDriver String         @default("local") // "local" | "r2" | "s3"
   status        UploadStatus   @default(ACTIVE)
   ownerId       String?
-  ownerType     String?        // "USER" | "TENANT" | "SYSTEM"
+  ownerType     String? // "USER" | "TENANT" | "SYSTEM"
   metadata      Json?
 
   tenantId String?
@@ -2012,13 +2049,13 @@ model UploadAsset {
 }
 
 model BackupPolicy {
-  id            String   @id @default(cuid())
-  isEnabled     Boolean  @default(true)
-  scheduleCron  String   @default("0 2 * * *") // daily at 02:00
-  retentionKeep Int      @default(5)            // keep N most recent successful backups
+  id             String  @id @default(cuid())
+  isEnabled      Boolean @default(true)
+  scheduleCron   String  @default("0 2 * * *") // daily at 02:00
+  retentionKeep  Int     @default(5) // keep N most recent successful backups
   includeUploads Boolean @default(true)
-  remoteSync    Boolean  @default(true)         // push to R2 when configured
-  notes         String?
+  remoteSync     Boolean @default(true) // push to R2 when configured
+  notes          String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2027,19 +2064,19 @@ model BackupPolicy {
 }
 
 model BackupJob {
-  id              String        @id @default(cuid())
-  type            BackupType    @default(MANUAL)
-  status          BackupStatus  @default(PENDING)
-  startedAt       DateTime?
-  completedAt     DateTime?
-  totalSizeBytes  Int?
-  archivePath     String?       // local path to .tar.gz
-  remoteKey       String?       // R2 object key
-  remoteUrl       String?       // signed/public URL (if generated)
-  errorMessage    String?
-  triggeredById   String?       // user id who triggered (manual)
-  manifest        Json?         // table counts, file counts, version
-  retainedUntil   DateTime?     // null = governed by retention policy
+  id             String       @id @default(cuid())
+  type           BackupType   @default(MANUAL)
+  status         BackupStatus @default(PENDING)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  totalSizeBytes Int?
+  archivePath    String? // local path to .tar.gz
+  remoteKey      String? // R2 object key
+  remoteUrl      String? // signed/public URL (if generated)
+  errorMessage   String?
+  triggeredById  String? // user id who triggered (manual)
+  manifest       Json? // table counts, file counts, version
+  retainedUntil  DateTime? // null = governed by retention policy
 
   artifacts BackupArtifact[]
   restores  RestoreJob[]
@@ -2055,8 +2092,8 @@ model BackupJob {
 model BackupArtifact {
   id        String             @id @default(cuid())
   kind      BackupArtifactKind
-  path      String             // local path
-  remoteKey String?            // R2 key if synced
+  path      String // local path
+  remoteKey String? // R2 key if synced
   sizeBytes Int
   checksum  String?
 
@@ -2070,14 +2107,14 @@ model BackupArtifact {
 }
 
 model RestoreJob {
-  id              String        @id @default(cuid())
-  status          RestoreStatus @default(PENDING)
-  startedAt       DateTime?
-  completedAt     DateTime?
-  errorMessage    String?
-  triggeredById   String        // user id who triggered (must be SuperAdmin)
-  confirmationHash String       // bcrypt of password used to confirm
-  notes           String?
+  id               String        @id @default(cuid())
+  status           RestoreStatus @default(PENDING)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  errorMessage     String?
+  triggeredById    String // user id who triggered (must be SuperAdmin)
+  confirmationHash String // bcrypt of password used to confirm
+  notes            String?
 
   backupJobId String
   backupJob   BackupJob @relation(fields: [backupJobId], references: [id])
@@ -2088,7 +2125,6 @@ model RestoreJob {
   @@index([status, createdAt])
   @@map("restore_jobs")
 }
-
 
 // =============================================================================
 // REPORTS
