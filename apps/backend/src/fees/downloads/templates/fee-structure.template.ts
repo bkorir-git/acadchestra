@@ -1,8 +1,9 @@
 /**
  * @file fee-structure.template.ts
  * @description Renders a single FeeStructure (with levels + components or
- *   flat components) into HTML for Puppeteer. Tenant-branded header, totals
- *   summary, per-level/component table.
+ *   flat components) into HTML for Puppeteer. The layout (`_layout.ts`)
+ *   places the tenant logo prominently at the top of every page.
+
  */
 
 import { html, layout } from './_layout';
@@ -12,10 +13,11 @@ export interface FeeStructureTemplateInput {
   structure: any;
   tenant: any;
   currency: Partial<CurrencyContext>;
+  pageOrientation?: 'portrait' | 'landscape';
 }
 
 export function feeStructureTemplate(input: FeeStructureTemplateInput): string {
-  const { structure, tenant, currency } = input;
+  const { structure, tenant, currency, pageOrientation } = input;
   const fmt = (n: number) => formatMoney(n, currency);
   const settings = tenant?.settings ?? {};
   const primary = settings.primaryColor ?? '#1E40AF';
@@ -99,5 +101,6 @@ export function feeStructureTemplate(input: FeeStructureTemplateInput): string {
     tenant,
     primaryColor: primary,
     body,
+    pageOrientation: pageOrientation ?? 'portrait',
   });
 }
