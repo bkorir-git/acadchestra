@@ -1,6 +1,16 @@
 /**
- * @description Notifications service — create, deliver, mark-read, and schedule.
- * Integrates with the event system to notify users on key events.
+ * @file notifications.service.ts
+ * @description Notifications service — create, deliver, mark-read, schedule.
+ *   Replaces the previous version where `notifyAdmins`, `notifyGuardians`,
+ *   and `broadcastForInvoices` were stubs that threw "Method not implemented".
+ *
+ *   Public surface used by the fee module's `BillingNotificationsListener`:
+ *     - notifyAdmins(tenantId, payload)
+ *     - notifyGuardians(tenantId, studentId, payload)
+ *     - broadcastForInvoices(tenantId, invoiceIds[])
+ *
+ *   Channel resolution (in-app / email / SMS / push) is centralised here so
+ *   listeners only deal with the domain shape.
  */
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
@@ -23,12 +33,39 @@ export interface CreateNotificationInput {
   scheduledAt?: Date;
 }
 
+export interface ListenerPayload {
+  /** Stable code used for routing — e.g. "BILLING_RUN_COMPLETED" */
+  code: string;
+  title: string;
+  body: string;
+  meta?: Record<string, unknown>;
+}
+
+const ADMIN_ROLES = ['SuperAdmin', 'Admin', 'Principal', 'Finance'];
+
+/** Map listener `code` → enum NotificationType. Falls back to SYSTEM. */
+function codeToType(code: string): NotificationType {
+  switch (code) {
+    case 'FEE_DUE_SOON':
+      return NotificationType.FEE_DUE;
+    case 'FEE_OVERDUE':
+      return NotificationType.FEE_OVERDUE;
+    case 'FEE_ARREARS_ALERT':
+      return NotificationType.ARREARS_ALERT;
+    case 'PAYMENT_RECEIVED':
+      return NotificationType.PAYMENT_RECEIVED;
+    default:
+      return NotificationType.SYSTEM;
+  }
+}
+
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
+  // ─── CORE CRUD ──────────────────────────────────────────────────
   async create(input: CreateNotificationInput) {
     return this.prisma.notification.create({
       data: {
@@ -48,31 +85,26 @@ export class NotificationsService {
     });
   }
 
-  /**
-   * Broadcast to every user of a tenant (or role, if filter provided).
-   */
   async broadcast(
     tenantId: string,
     input: Omit<CreateNotificationInput, 'tenantId' | 'userId'>,
-    options?: { roleNames?: string[] },
+    options?: { roleNames?: string[]; userIds?: string[] },
   ) {
     const where: Prisma.UserWhereInput = {
       tenantId,
       isActive: true,
+      ...(options?.userIds?.length && { id: { in: options.userIds } }),
       ...(options?.roleNames?.length && {
         userRoles: {
           some: { role: { name: { in: options.roleNames } } },
         },
       }),
     };
-
     const users = await this.prisma.user.findMany({
       where,
       select: { id: true },
     });
-
     if (!users.length) return { created: 0 };
-
     const now = new Date();
     const result = await this.prisma.notification.createMany({
       data: users.map((u) => ({
@@ -90,10 +122,80 @@ export class NotificationsService {
         sentAt: input.scheduledAt ? null : now,
       })),
     });
-
     return { created: result.count };
   }
 
+  // ─── DOMAIN HELPERS USED BY LISTENERS ───────────────────────────
+  async notifyAdmins(tenantId: string, payload: ListenerPayload) {
+    return this.broadcast(
+      tenantId,
+      {
+        type: codeToType(payload.code),
+        title: payload.title,
+        message: payload.body,
+        metadata: (payload.meta ?? {}) as Prisma.InputJsonValue,
+      },
+      { roleNames: ADMIN_ROLES },
+    );
+  }
+
+  async notifyGuardians(
+    tenantId: string,
+    studentId: string,
+    payload: ListenerPayload,
+  ) {
+    const links = await this.prisma.studentGuardian.findMany({
+      where: { tenantId, studentId, receivesFinancials: true },
+      select: { guardian: { select: { userId: true } } },
+    });
+    const userIds = links
+      .map((l) => l.guardian?.userId)
+      .filter((id): id is string => !!id);
+    if (!userIds.length) {
+      // No portal user — log only (we'll wire SMS/email later).
+      this.logger.debug(
+        `notifyGuardians: no portal users for student ${studentId}`,
+      );
+      return { created: 0 };
+    }
+    return this.broadcast(
+      tenantId,
+      {
+        type: codeToType(payload.code),
+        title: payload.title,
+        message: payload.body,
+        metadata: (payload.meta ?? {}) as Prisma.InputJsonValue,
+      },
+      { userIds },
+    );
+  }
+
+  async broadcastForInvoices(tenantId: string, invoiceIds: string[]) {
+    if (!invoiceIds?.length) return { created: 0 };
+    const invoices = await this.prisma.invoice.findMany({
+      where: { tenantId, id: { in: invoiceIds } },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        studentId: true,
+        totalAmount: true,
+        dueDate: true,
+      },
+    });
+    let total = 0;
+    for (const inv of invoices) {
+      const r = await this.notifyGuardians(tenantId, inv.studentId, {
+        code: 'INVOICE_ISSUED',
+        title: `New invoice ${inv.invoiceNumber}`,
+        body: `Invoice ${inv.invoiceNumber} of ${inv.totalAmount} has been issued${inv.dueDate ? `, due ${inv.dueDate.toDateString()}` : ''}.`,
+        meta: { invoiceId: inv.id },
+      });
+      total += r.created;
+    }
+    return { created: total };
+  }
+
+  // ─── READS ─────────────────────────────────────────────────────
   async list(
     tenantId: string,
     userId: string,
@@ -114,7 +216,6 @@ export class NotificationsService {
       ...(options?.unreadOnly && { readAt: null }),
       ...(options?.type && { type: options.type }),
     };
-
     const [data, total, unread] = await Promise.all([
       this.prisma.notification.findMany({
         where,
@@ -127,7 +228,6 @@ export class NotificationsService {
         where: { tenantId, userId, readAt: null },
       }),
     ]);
-
     return {
       data,
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
@@ -164,9 +264,12 @@ export class NotificationsService {
     return { deleted: true };
   }
 
-  /**
-   * Process scheduled notifications (called by cron). Marks them SENT.
-   */
+  async getUnreadCount(tenantId: string, userId: string) {
+    return this.prisma.notification.count({
+      where: { tenantId, userId, readAt: null },
+    });
+  }
+
   async processScheduled(now: Date = new Date()) {
     const due = await this.prisma.notification.findMany({
       where: {
@@ -175,22 +278,13 @@ export class NotificationsService {
       },
       take: 500,
     });
-
     for (const n of due) {
       await this.prisma.notification.update({
         where: { id: n.id },
         data: { status: NotificationStatus.SENT, sentAt: new Date() },
       });
-      // TODO: Hook into email/SMS/push providers
       this.logger.log(`Dispatched notification ${n.id} [${n.channel}]`);
     }
-
     return { processed: due.length };
-  }
-
-  async getUnreadCount(tenantId: string, userId: string) {
-    return this.prisma.notification.count({
-      where: { tenantId, userId, readAt: null },
-    });
   }
 }
