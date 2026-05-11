@@ -18,6 +18,35 @@ export class UsersService {
     return user?.userRoles?.some((ur: any) => ur.role?.name === 'SuperAdmin');
   }
 
+  private validatePasswordStrength(password: string) {
+    const strongEnough =
+      password.length >= 8 &&
+      /[A-Z]/.test(password) &&
+      /[a-z]/.test(password) &&
+      /\d/.test(password) &&
+      /[^A-Za-z0-9]/.test(password);
+
+    if (!strongEnough) {
+      throw new BadRequestException(
+        'Password must be at least 8 characters and include uppercase, lowercase, number, and symbol',
+      );
+    }
+  }
+
+  private sanitizeProfileUpdate(input: any) {
+    const {
+      tenantId,
+      roleName,
+      newPassword,
+      password,
+      email,
+      id,
+      userRoles,
+      ...rest
+    } = input || {};
+    return rest;
+  }
+
   async create(
     createUserDto: CreateUserDto,
     currentTenantId: string,
@@ -31,31 +60,36 @@ export class UsersService {
       );
     }
 
-    const targetTenantId = isSuperAdmin
-      ? createUserDto.tenantId
-      : currentTenantId;
+    const isPlatformUser = isSuperAdmin && roleName === 'SuperAdmin';
+    const targetTenantId = isPlatformUser
+      ? null
+      : isSuperAdmin
+        ? createUserDto.tenantId
+        : currentTenantId;
 
-    if (!targetTenantId) {
+    if (!isPlatformUser && !targetTenantId) {
       throw new BadRequestException('Target tenant is required');
     }
 
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
     });
-
     if (existingUser) {
       throw new ConflictException('User with this email already exists');
     }
 
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: targetTenantId },
-    });
-
-    if (!tenant) {
-      throw new NotFoundException('Tenant not found');
+    if (targetTenantId) {
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: targetTenantId },
+      });
+      if (!tenant) throw new NotFoundException('Tenant not found');
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    if (password) this.validatePasswordStrength(password);
+
+    const finalPassword =
+      password || `Temp@${Math.random().toString(36).slice(2, 10)}!`;
+    const hashedPassword = await bcrypt.hash(finalPassword, 12);
 
     const created = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
@@ -63,7 +97,8 @@ export class UsersService {
           ...userData,
           email,
           password: hashedPassword,
-          tenantId: targetTenantId,
+          mustChangePassword: !password,
+          tenantId: targetTenantId as any,
         },
       });
 
@@ -71,12 +106,12 @@ export class UsersService {
         const role = await tx.role.findFirst({
           where: {
             name: roleName,
-            tenantId: targetTenantId,
+            tenantId: targetTenantId ?? undefined,
           },
         });
 
         if (!role) {
-          throw new NotFoundException(`Role "${roleName}" not found in tenant`);
+          throw new NotFoundException(`Role "${roleName}" not found`);
         }
 
         await tx.userRole.create({
@@ -93,7 +128,14 @@ export class UsersService {
     return this.findOne(created, isSuperAdmin ? null : currentTenantId);
   }
 
-  async findAllGlobal(page = 1, limit = 10, search?: string) {
+  async findAllGlobal(
+    page = 1,
+    limit = 10,
+    search?: string,
+    role?: string,
+    tenantId?: string,
+    isActive?: boolean,
+  ) {
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -104,6 +146,9 @@ export class UsersService {
         { email: { contains: search, mode: 'insensitive' } },
       ];
     }
+    if (role) where.userRoles = { some: { role: { name: role } } };
+    if (tenantId) where.tenantId = tenantId;
+    if (typeof isActive === 'boolean') where.isActive = isActive;
 
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
@@ -113,10 +158,18 @@ export class UsersService {
         select: {
           id: true,
           email: true,
+          username: true,
           firstName: true,
           lastName: true,
           phone: true,
+          avatar: true,
+          dateOfBirth: true,
+          gender: true,
+          isEmailVerified: true,
+          isTwoFactorEnabled: true,
+          mustChangePassword: true,
           isActive: true,
+          lastLogin: true,
           createdAt: true,
           updatedAt: true,
           tenantId: true,
@@ -191,10 +244,18 @@ export class UsersService {
         select: {
           id: true,
           email: true,
+          username: true,
           firstName: true,
           lastName: true,
           phone: true,
+          avatar: true,
+          dateOfBirth: true,
+          gender: true,
+          isEmailVerified: true,
+          isTwoFactorEnabled: true,
+          mustChangePassword: true,
           isActive: true,
+          lastLogin: true,
           createdAt: true,
           updatedAt: true,
           tenantId: true,
@@ -231,10 +292,18 @@ export class UsersService {
       select: {
         id: true,
         email: true,
+        username: true,
         firstName: true,
         lastName: true,
         phone: true,
+        avatar: true,
+        dateOfBirth: true,
+        gender: true,
+        isEmailVerified: true,
+        isTwoFactorEnabled: true,
+        mustChangePassword: true,
         isActive: true,
+        lastLogin: true,
         createdAt: true,
         updatedAt: true,
         tenantId: true,
@@ -254,6 +323,7 @@ export class UsersService {
         },
         student: true,
         teacher: true,
+        guardian: true,
       },
     });
 
@@ -284,12 +354,59 @@ export class UsersService {
       throw new ForbiddenException('School admin cannot update SuperAdmin');
     }
 
-    const updated = await this.prisma.user.update({
-      where: { id },
-      data: updateUserDto,
+    const { roleName, newPassword } = updateUserDto as any;
+    const safeData = this.sanitizeProfileUpdate(updateUserDto);
+
+    if (tenantId && roleName === 'SuperAdmin') {
+      throw new ForbiddenException(
+        'School admin cannot assign SuperAdmin role',
+      );
+    }
+
+    if (newPassword) this.validatePasswordStrength(newPassword);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (Object.keys(safeData).length > 0) {
+        await tx.user.update({
+          where: { id },
+          data: safeData,
+        });
+      }
+
+      if (roleName) {
+        const role = await tx.role.findFirst({
+          where: {
+            name: roleName,
+            tenantId: user.tenantId ?? undefined,
+          },
+        });
+
+        if (!role) {
+          throw new NotFoundException(`Role "${roleName}" not found`);
+        }
+
+        await tx.userRole.deleteMany({ where: { userId: id } });
+        await tx.userRole.create({
+          data: {
+            userId: id,
+            roleId: role.id,
+          },
+        });
+      }
+
+      if (newPassword) {
+        const hashed = await bcrypt.hash(newPassword, 12);
+        await tx.user.update({
+          where: { id },
+          data: {
+            password: hashed,
+            mustChangePassword: true,
+          },
+        });
+      }
     });
 
-    return this.findOne(updated.id, tenantId);
+    return this.findOne(id, tenantId);
   }
 
   async toggleUserStatus(id: string, tenantId?: string | null) {

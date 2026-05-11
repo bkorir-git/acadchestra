@@ -1,51 +1,67 @@
+/**
+ * @file global-users.service.ts
+ * @description SuperAdmin-only service for managing users across the platform.
+ *   Supports profile update, role management, password change, and immutable
+ *   tenant assignment.
+ */
+
 import {
   Injectable,
   NotFoundException,
   ConflictException,
   BadRequestException,
-  ForbiddenException,
 } from '@nestjs/common';
-import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../database/prisma.service';
-
-export interface GlobalUsersFilter {
-  page?: number;
-  limit?: number;
-  search?: string;
-  role?: string;
-  tenantId?: string;
-  isActive?: boolean;
-}
-
-export interface CreateGlobalUserDto {
-  email: string;
-  password?: string;
-  firstName: string;
-  lastName: string;
-  phone?: string;
-  tenantId?: string;
-  roleName?: string;
-  sendWelcomeEmail?: boolean;
-}
-
-export interface UpdateGlobalUserDto {
-  firstName?: string;
-  lastName?: string;
-  phone?: string;
-  isActive?: boolean;
-  tenantId?: string;
-}
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class GlobalUsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(filters: GlobalUsersFilter = {}) {
+  private validatePasswordStrength(password: string) {
+    const strongEnough =
+      password.length >= 8 &&
+      /[A-Z]/.test(password) &&
+      /[a-z]/.test(password) &&
+      /\d/.test(password) &&
+      /[^A-Za-z0-9]/.test(password);
+
+    if (!strongEnough) {
+      throw new BadRequestException(
+        'Password must be at least 8 characters and include uppercase, lowercase, number, and symbol',
+      );
+    }
+  }
+
+  private sanitizeProfileUpdate(input: any) {
+    const {
+      tenantId,
+      roleName,
+      newPassword,
+      password,
+      email,
+      id,
+      userRoles,
+      ...rest
+    } = input || {};
+    return rest;
+  }
+
+  async findAll(filters: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    role?: string;
+    tenantId?: string;
+    isActive?: boolean;
+  }) {
     const { page = 1, limit = 20, search, role, tenantId, isActive } = filters;
     const skip = (page - 1) * limit;
-
     const where: any = {};
 
+    if (typeof isActive === 'boolean') where.isActive = isActive;
+    if (tenantId) where.tenantId = tenantId;
+    if (role) where.userRoles = { some: { role: { name: role } } };
     if (search) {
       where.OR = [
         { firstName: { contains: search, mode: 'insensitive' } },
@@ -54,268 +70,248 @@ export class GlobalUsersService {
       ];
     }
 
-    if (tenantId) where.tenantId = tenantId;
-    if (typeof isActive === 'boolean') where.isActive = isActive;
-    if (role) {
-      where.userRoles = {
-        some: {
-          role: {
-            name: role,
-          },
-        },
-      };
-    }
-
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          tenant: {
-            select: {
-              id: true,
-              name: true,
-              domain: true,
-            },
-          },
-          userRoles: {
-            include: {
-              role: true,
-            },
-          },
-          student: true,
-          teacher: true,
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          avatar: true,
+          dateOfBirth: true,
+          gender: true,
+          isEmailVerified: true,
+          isTwoFactorEnabled: true,
+          mustChangePassword: true,
+          isActive: true,
+          lastLogin: true,
+          createdAt: true,
+          updatedAt: true,
+          tenantId: true,
+          tenant: true,
+          userRoles: { include: { role: true } },
         },
+        orderBy: { createdAt: 'desc' },
       }),
       this.prisma.user.count({ where }),
     ]);
 
-    const sanitizedUsers = users.map(({ password, ...user }) => ({
-      ...user,
-      platformScope: user.userRoles?.some(
-        (ur) => ur.role?.name === 'SuperAdmin',
-      ),
-    }));
+    const normalized = users.map((u: any) => {
+      const isPlatform = u.userRoles?.some(
+        (ur: any) => ur.role?.name === 'SuperAdmin',
+      );
+      return isPlatform ? { ...u, tenant: null, tenantId: null } : u;
+    });
 
     return {
-      data: sanitizedUsers,
-      meta: {
-        total,
-        page,
-        limit,
-        pages: Math.ceil(total / limit),
-      },
+      data: normalized,
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }
 
   async findOne(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      include: {
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        avatar: true,
+        dateOfBirth: true,
+        gender: true,
+        isEmailVerified: true,
+        isTwoFactorEnabled: true,
+        mustChangePassword: true,
+        isActive: true,
+        lastLogin: true,
+        createdAt: true,
+        updatedAt: true,
+        tenantId: true,
         tenant: true,
         userRoles: {
           include: {
             role: {
               include: {
-                rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
-                },
+                rolePermissions: { include: { permission: true } },
               },
             },
           },
         },
-        student: {
-          include: {
-            class: {
-              include: {
-                academicYear: true,
-              },
-            },
-          },
-        },
+        student: true,
         teacher: true,
+        guardian: true,
       },
     });
-
     if (!user) throw new NotFoundException('User not found');
-
-    const { password, ...safeUser } = user;
-    return {
-      ...safeUser,
-      platformScope: safeUser.userRoles?.some(
-        (ur) => ur.role?.name === 'SuperAdmin',
-      ),
-    };
+    return user;
   }
 
-  async create(data: CreateGlobalUserDto) {
-    if (!data.tenantId) {
-      throw new BadRequestException('tenantId is required for user creation');
-    }
+  async create(data: any) {
+    const {
+      email,
+      password,
+      roleName = 'Admin',
+      tenantId,
+      sendWelcomeEmail,
+      ...rest
+    } = data;
 
-    const existing = await this.prisma.user.findUnique({
-      where: { email: data.email },
-    });
-    if (existing) throw new ConflictException('Email already exists');
+    if (!email) throw new BadRequestException('Email is required');
 
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: data.tenantId },
-    });
-    if (!tenant) throw new NotFoundException('Tenant not found');
-
-    const password = data.password?.trim() || this.generateTempPassword();
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    const user = await this.prisma.user.create({
-      data: {
-        email: data.email,
-        password: hashedPassword,
-        firstName: data.firstName,
-        lastName: data.lastName,
-        phone: data.phone,
-        tenantId: data.tenantId,
-        isEmailVerified: false,
-      },
-    });
-
-    if (data.roleName) {
-      const role = await this.prisma.role.findFirst({
-        where: {
-          name: data.roleName,
-          tenantId: data.tenantId,
-        },
-      });
-
-      if (role) {
-        await this.prisma.userRole.create({
-          data: {
-            userId: user.id,
-            roleId: role.id,
-          },
-        });
-      }
-    }
-
-    return {
-      ...(await this.findOne(user.id)),
-      onboarding: {
-        passwordMode: data.password
-          ? 'manual_password_set'
-          : 'temporary_password_generated',
-        temporaryPassword: data.password ? undefined : password,
-        welcomeEmailRequested: !!data.sendWelcomeEmail,
-        welcomeEmailStatus: data.sendWelcomeEmail
-          ? 'pending_integration'
-          : 'not_requested',
-      },
-    };
-  }
-
-  async update(id: string, data: UpdateGlobalUserDto) {
-    const existing = await this.prisma.user.findUnique({
-      where: { id },
-      include: { userRoles: { include: { role: true } } },
-    });
-
-    if (!existing) throw new NotFoundException('User not found');
-
-    const isPlatformUser = existing.userRoles.some(
-      (ur) => ur.role?.name === 'SuperAdmin',
-    );
-    if (
-      isPlatformUser &&
-      typeof data.tenantId === 'string' &&
-      data.tenantId !== existing.tenantId
-    ) {
-      throw new ForbiddenException(
-        'Platform SuperAdmin users cannot be moved between schools',
+    const isPlatformUser = roleName === 'SuperAdmin';
+    if (!isPlatformUser && !tenantId) {
+      throw new BadRequestException(
+        'tenantId is required for non-SuperAdmin users',
       );
     }
 
-    if (data.tenantId && data.tenantId !== existing.tenantId) {
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing)
+      throw new ConflictException('User with this email already exists');
+
+    if (tenantId) {
       const tenant = await this.prisma.tenant.findUnique({
-        where: { id: data.tenantId },
+        where: { id: tenantId },
       });
-      if (!tenant) throw new NotFoundException('Target tenant not found');
+      if (!tenant) throw new NotFoundException('Tenant not found');
     }
 
-    await this.prisma.user.update({
+    if (password) this.validatePasswordStrength(password);
+
+    const finalPassword =
+      password || `Temp@${Math.random().toString(36).slice(2, 10)}!`;
+    const hashedPassword = await bcrypt.hash(finalPassword, 12);
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          ...rest,
+          email,
+          password: hashedPassword,
+          mustChangePassword: !password,
+          tenantId: isPlatformUser ? null : tenantId,
+        } as any,
+      });
+
+      const role = await tx.role.findFirst({
+        where: {
+          name: roleName,
+          tenantId: isPlatformUser ? undefined : tenantId,
+        },
+      });
+      if (!role) throw new NotFoundException(`Role "${roleName}" not found`);
+
+      await tx.userRole.create({
+        data: { userId: user.id, roleId: role.id },
+      });
+
+      return user.id;
+    });
+
+    return this.findOne(created);
+  }
+
+  async update(id: string, data: any) {
+    const user = await this.prisma.user.findUnique({
       where: { id },
-      data,
+      include: { userRoles: { include: { role: true } } },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const { roleName, newPassword } = data || {};
+    const safe = this.sanitizeProfileUpdate(data);
+
+    if (!user.tenantId && roleName && roleName !== 'SuperAdmin') {
+      throw new BadRequestException(
+        'Platform users can only keep the SuperAdmin role',
+      );
+    }
+
+    if (newPassword) this.validatePasswordStrength(newPassword);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (Object.keys(safe).length > 0) {
+        await tx.user.update({ where: { id }, data: safe });
+      }
+
+      if (roleName) {
+        const role = await tx.role.findFirst({
+          where: {
+            name: roleName,
+            tenantId: user.tenantId ?? undefined,
+          },
+        });
+
+        if (!role) throw new NotFoundException(`Role "${roleName}" not found`);
+
+        await tx.userRole.deleteMany({ where: { userId: id } });
+        await tx.userRole.create({
+          data: { userId: id, roleId: role.id },
+        });
+      }
+
+      if (newPassword) {
+        const hashed = await bcrypt.hash(newPassword, 12);
+        await tx.user.update({
+          where: { id },
+          data: { password: hashed, mustChangePassword: true },
+        });
+      }
     });
 
     return this.findOne(id);
+  }
+
+  async toggleUserStatus(id: string) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+    await this.prisma.user.update({
+      where: { id },
+      data: { isActive: !user.isActive },
+    });
+    return this.findOne(id);
+  }
+
+  async resetPassword(id: string, newPassword: string) {
+    if (!newPassword || newPassword.length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters');
+    }
+    this.validatePasswordStrength(newPassword);
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+    const hashed = await bcrypt.hash(newPassword, 12);
+    await this.prisma.user.update({
+      where: { id },
+      data: { password: hashed, mustChangePassword: true },
+    });
+    return { message: 'Password reset successfully' };
   }
 
   async delete(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      include: {
-        student: true,
-        teacher: true,
-        userRoles: { include: { role: true } },
-      },
+      include: { student: true, teacher: true },
     });
-
     if (!user) throw new NotFoundException('User not found');
-
-    if (user.userRoles.some((ur) => ur.role?.name === 'SuperAdmin')) {
-      throw new ForbiddenException(
-        'Platform SuperAdmin users cannot be deleted from global users management',
-      );
-    }
-
     if (user.student || user.teacher) {
       throw new BadRequestException(
-        'Cannot delete a user linked to a student or teacher profile. Delete the linked profile first.',
+        'Cannot delete a user linked to a student/teacher profile. Remove the linked profile first.',
       );
     }
-
     await this.prisma.user.delete({ where: { id } });
     return { message: 'User deleted successfully' };
   }
 
-  async toggleUserStatus(id: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      include: { userRoles: { include: { role: true } } },
-    });
-
-    if (!user) throw new NotFoundException('User not found');
-
-    if (user.userRoles.some((ur) => ur.role?.name === 'SuperAdmin')) {
-      throw new ForbiddenException(
-        'Platform SuperAdmin users cannot be deactivated here',
-      );
-    }
-
-    await this.prisma.user.update({
-      where: { id },
-      data: { isActive: !user.isActive },
-    });
-
-    return this.findOne(id);
-  }
-
-  async resetPassword(id: string, newPassword: string) {
-    const user = await this.prisma.user.findUnique({ where: { id } });
-    if (!user) throw new NotFoundException('User not found');
-
-    const hashed = await bcrypt.hash(newPassword, 12);
-    await this.prisma.user.update({
-      where: { id },
-      data: { password: hashed },
-    });
-
-    return { message: 'Password reset successfully' };
-  }
-
   async getUserStats() {
-    const [totalUsers, activeUsers, recentUsers, users, tenants] =
+    const [totalUsers, activeUsers, recentUsers, byRole, byTenant] =
       await Promise.all([
         this.prisma.user.count(),
         this.prisma.user.count({ where: { isActive: true } }),
@@ -326,66 +322,32 @@ export class GlobalUsersService {
             },
           },
         }),
-        this.prisma.user.findMany({
+        this.prisma.role.findMany({
           select: {
-            id: true,
-            tenantId: true,
-            userRoles: {
-              select: {
-                role: {
-                  select: { name: true },
-                },
-              },
-            },
+            name: true,
+            _count: { select: { userRoles: true } },
           },
         }),
         this.prisma.tenant.findMany({
           select: {
-            id: true,
             name: true,
+            _count: { select: { users: true } },
           },
         }),
       ]);
-
-    const roleMap = new Map<string, number>();
-    const tenantMap = new Map<string, number>();
-    const tenantNameMap = new Map(tenants.map((t) => [t.id, t.name]));
-
-    for (const user of users) {
-      const tenantName = tenantNameMap.get(user.tenantId) || 'Unknown';
-      tenantMap.set(tenantName, (tenantMap.get(tenantName) || 0) + 1);
-
-      const roleNames = user.userRoles
-        .map((ur) => ur.role?.name)
-        .filter(Boolean);
-      if (roleNames.length === 0) {
-        roleMap.set('Unassigned', (roleMap.get('Unassigned') || 0) + 1);
-      } else {
-        for (const roleName of roleNames) {
-          roleMap.set(roleName!, (roleMap.get(roleName!) || 0) + 1);
-        }
-      }
-    }
-
-    const usersByRole = Array.from(roleMap.entries())
-      .map(([role, count]) => ({ role, count }))
-      .sort((a, b) => b.count - a.count);
-
-    const usersByTenant = Array.from(tenantMap.entries())
-      .map(([tenant, count]) => ({ tenant, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
 
     return {
       totalUsers,
       activeUsers,
       recentUsers,
-      usersByRole,
-      usersByTenant,
+      usersByRole: byRole.map((r) => ({
+        role: r.name,
+        count: r._count.userRoles,
+      })),
+      usersByTenant: byTenant.map((t) => ({
+        tenant: t.name,
+        count: t._count.users,
+      })),
     };
-  }
-
-  private generateTempPassword() {
-    return Math.random().toString(36).slice(-10) + 'A!';
   }
 }
