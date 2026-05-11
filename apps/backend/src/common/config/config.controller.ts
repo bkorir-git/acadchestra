@@ -1,24 +1,28 @@
 /**
  * @file config.controller.ts
  * @module common/config
- * @description REST endpoints for tenant configuration. The Settings UI splits
- *   this by category (one tab per category) and writes via the bulk endpoint
- *   to keep the form atomic.
+ * @description REST endpoints for tenant configuration. Endpoints accept an
+ *   optional `?tenantId=` query — used exclusively by SuperAdmin to operate
+ *   on a specific school. Admin / Principal / Teacher always work against
+ *   their own tenant; the query string is ignored for them and rejected if
+ *   it points elsewhere.
  *
  *   Endpoints:
- *     GET    /config                          → list everything (admin)
- *     GET    /config/categories               → list distinct categories
- *     GET    /config/category/:category       → load one category (merged with defaults)
- *     PATCH  /config/category/:category       → write keys in one category
- *     PATCH  /config/bulk                     → write across categories (onboarding)
+ *     GET    /config[?tenantId=]                          → list everything
+ *     GET    /config/categories[?tenantId=]               → list categories
+ *     GET    /config/category/:category[?tenantId=]       → load one category
+ *     PATCH  /config/category/:category[?tenantId=]       → write keys
+ *     PATCH  /config/bulk[?tenantId=]                     → cross-category write
  */
 
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -27,10 +31,7 @@ import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { ConfigService } from './config.service';
-import {
-  SetConfigCategoryDto,
-  SetConfigBulkDto,
-} from './dto/config.dto';
+import { SetConfigCategoryDto, SetConfigBulkDto } from './dto/config.dto';
 
 @ApiTags('Config')
 @Controller('config')
@@ -39,18 +40,41 @@ import {
 export class ConfigController {
   constructor(private readonly service: ConfigService) {}
 
+  /**
+   * Resolve the effective tenantId for this request.
+   *  - SuperAdmin: must pass `?tenantId=...` (or fall back to own tenant).
+   *  - Anyone else: query param is ignored unless it matches their own tenant
+   *    — in which case it is harmless. Mismatch → 403.
+   */
+  private resolveTenantId(user: any, requested?: string): string {
+    const isSuper =
+      Array.isArray(user?.roles) &&
+      user.roles.some((r: string) => r === 'SuperAdmin');
+
+    if (isSuper) {
+      return requested && requested.length > 0 ? requested : user.tenantId;
+    }
+
+    if (requested && requested !== user.tenantId) {
+      throw new ForbiddenException(
+        'You can only manage configuration for your own tenant',
+      );
+    }
+    return user.tenantId;
+  }
+
   @Get()
   @Roles('SuperAdmin', 'Admin', 'Principal')
-  @ApiOperation({ summary: 'List every config row for this tenant' })
-  list(@CurrentUser() user: any) {
-    return this.service.listAll(user.tenantId);
+  @ApiOperation({ summary: 'List every config row for the resolved tenant' })
+  list(@CurrentUser() user: any, @Query('tenantId') tenantId?: string) {
+    return this.service.listAll(this.resolveTenantId(user, tenantId));
   }
 
   @Get('categories')
   @Roles('SuperAdmin', 'Admin', 'Principal')
   @ApiOperation({ summary: 'List distinct config categories' })
-  categories(@CurrentUser() user: any) {
-    return this.service.listCategories(user.tenantId);
+  categories(@CurrentUser() user: any, @Query('tenantId') tenantId?: string) {
+    return this.service.listCategories(this.resolveTenantId(user, tenantId));
   }
 
   @Get('category/:category')
@@ -61,8 +85,12 @@ export class ConfigController {
   getCategory(
     @Param('category') category: string,
     @CurrentUser() user: any,
+    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.getCategory(user.tenantId, category);
+    return this.service.getCategory(
+      this.resolveTenantId(user, tenantId),
+      category,
+    );
   }
 
   @Patch('category/:category')
@@ -72,8 +100,11 @@ export class ConfigController {
     @Param('category') category: string,
     @Body() dto: SetConfigCategoryDto,
     @CurrentUser() user: any,
+    @Query('tenantId') tenantId?: string,
   ) {
-    return this.service.setBulk(user.tenantId, { [category]: dto.values });
+    return this.service.setBulk(this.resolveTenantId(user, tenantId), {
+      [category]: dto.values,
+    });
   }
 
   @Patch('bulk')
@@ -81,7 +112,14 @@ export class ConfigController {
   @ApiOperation({
     summary: 'Bulk write configs across multiple categories (onboarding)',
   })
-  updateBulk(@Body() dto: SetConfigBulkDto, @CurrentUser() user: any) {
-    return this.service.setBulk(user.tenantId, dto.payload);
+  updateBulk(
+    @Body() dto: SetConfigBulkDto,
+    @CurrentUser() user: any,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.service.setBulk(
+      this.resolveTenantId(user, tenantId),
+      dto.payload,
+    );
   }
 }
