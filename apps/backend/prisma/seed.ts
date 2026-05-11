@@ -112,12 +112,12 @@ async function main() {
 
   // 7. Default academic year for the demo
   await prisma.academicYear.upsert({
-    where: { name_tenantId: { name: '2024-2025', tenantId: tenant.id } },
+    where: { name_tenantId: { name: '2026', tenantId: tenant.id } },
     update: {},
     create: {
-      name: '2024-2025',
-      startDate: new Date('2024-09-01'),
-      endDate: new Date('2025-06-30'),
+      name: '2026',
+      startDate: new Date('2026-01-01'),
+      endDate: new Date('2026-12-12'),
       isCurrent: true,
       tenantId: tenant.id,
     },
