@@ -5,7 +5,7 @@
     "buildCommand": "npm install && npm run build"
   },
   "deploy": {
-    "startCommand": "npm run prisma:deploy && node dist/main.js",
+    "startCommand": "pwd && ls -la && echo '--- dist ---' && ls -la dist 2>&1 || echo 'NO DIST DIR'",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
