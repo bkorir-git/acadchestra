@@ -15,8 +15,10 @@ describe('AppController', () => {
   });
 
   describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
+    it('should return the Acadchestra welcome message', () => {
+      expect(appController.getHello()).toBe(
+        'Welcome to Acadchestra API! 🎓 Orchestrating Education Excellence',
+      );
     });
   });
 });
