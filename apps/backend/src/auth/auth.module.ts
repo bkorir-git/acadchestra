@@ -36,7 +36,7 @@ import { TokenService } from './services/token.service';
       useFactory: (cfg: NestConfigService) => ({
         secret: cfg.get<string>('JWT_SECRET'),
         signOptions: {
-          expiresIn: cfg.get<string>('JWT_EXPIRES_IN', '1h'),
+          expiresIn: cfg.get<string>('JWT_EXPIRES_IN', '1h') as unknown as number,
         },
       }),
     }),

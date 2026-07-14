@@ -80,7 +80,7 @@ export class PdfRendererService implements OnModuleInit, OnModuleDestroy {
     const page = await browser.newPage();
     try {
       await page.setContent(html, {
-        waitUntil: ['load', 'domcontentloaded', 'networkidle0'],
+        waitUntil: ['load', 'domcontentloaded'],
         timeout: 30_000,
       });
       const pdf = await page.pdf({
