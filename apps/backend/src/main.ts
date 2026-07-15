@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
@@ -13,17 +13,20 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
+  const logger = new Logger('Bootstrap');
 
   // Security
   app.use(helmet());
   app.use(compression());
 
   // CORS
+  const appUrl = configService.get<string>('APP_URL');
   app.enableCors({
     origin: [
       'http://localhost:3000',
       'http://localhost:3001',
       'http://localhost:3002',
+      ...(appUrl ? [appUrl] : []),
     ],
     credentials: true,
   });
@@ -77,10 +80,13 @@ async function bootstrap() {
   const port = configService.get('PORT', 3001);
   await app.listen(port);
 
-  console.log(
-    `🚀 Acadchestra API is running on: http://localhost:${port}/${apiPrefix}`,
-  );
-  console.log(`📚 API Documentation: http://localhost:${port}/docs`);
+const apiUrl = configService.get<string>(
+  'PUBLIC_BASE_URL',
+  `http://localhost:${port}`,
+);
+
+  logger.log(`🚀 Acadchestra API is running on: ${apiUrl}/${apiPrefix}`);
+  logger.log(`📚 API Documentation: ${apiUrl}/docs`);
 }
 
 bootstrap();
