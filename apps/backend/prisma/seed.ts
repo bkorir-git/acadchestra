@@ -109,6 +109,42 @@ async function main() {
     });
   }
   console.log(`✅ Demo SuperAdmin: ${superUser.email}`);
+const adminHashed = await bcrypt.hash('Admin123!', 12);
+
+const adminUser = await prisma.user.upsert({
+  where: { email: 'admin@demo.acadchestra.com' },
+  update: {},
+  create: {
+    email: 'admin@demo.acadchestra.com',
+    password: adminHashed,
+    firstName: 'Admin',
+    lastName: 'User',
+    isEmailVerified: true,
+    tenantId: tenant.id,
+  },
+});
+
+const adminRole = await prisma.role.findFirst({
+  where: { name: 'Admin', tenantId: tenant.id },
+});
+
+if (adminRole) {
+  await prisma.userRole.upsert({
+    where: {
+      userId_roleId: {
+        userId: adminUser.id,
+        roleId: adminRole.id,
+      },
+    },
+    update: {},
+    create: {
+      userId: adminUser.id,
+      roleId: adminRole.id,
+    },
+  });
+}
+
+console.log(`✅ Demo Admin: ${adminUser.email}`);
 
   // 7. Default academic year for the demo
   await prisma.academicYear.upsert({
