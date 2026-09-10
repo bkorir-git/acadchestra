@@ -1,3 +1,6 @@
+"engines": {
+  "node": "20.x"
+}
 {
   "name": "acadchestra",
   "version": "1.0.0",
