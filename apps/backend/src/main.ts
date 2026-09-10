@@ -20,16 +20,17 @@ async function bootstrap() {
   app.use(compression());
 
   // CORS
-  const appUrl = configService.get<string>('APP_URL');
-  app.enableCors({
-    origin: [
-      'http://localhost:3000',
-      'http://localhost:3001',
-      'http://localhost:3002',
-      ...(appUrl ? [appUrl] : []),
-    ],
-    credentials: true,
-  });
+  const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:3002',
+  'https://acadchestra-web-pi.vercel.app',
+];
+
+app.enableCors({
+  origin: allowedOrigins,
+  credentials: true,
+});
 
   // Global prefix
   const apiPrefix = configService.get('API_PREFIX', 'api/v1');
